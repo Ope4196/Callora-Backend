@@ -41,6 +41,14 @@ See [docs/gateway-api-key-auth.md](./docs/gateway-api-key-auth.md) for the full 
 - Read methods support time-bounded lookups by `userId` or `apiId`, plus aggregate totals for user spend and API revenue.
 - Amounts are handled as smallest-unit `bigint` values in application code, even though the backing column is named `amount_usdc`.
 
+## Settlement status sync
+
+- Successful payout submissions remain `pending` with a `tx_hash` until Horizon confirms the on-chain outcome.
+- A background settlement-status sync job polls the active network Horizon URL from `config.stellar.horizonUrl`.
+- Confirmed transactions transition settlements to `completed`, while unsuccessful or missing transactions transition them to `failed`.
+- Transient Horizon failures are retried with exponential backoff and do not flip settlement status if retries are exhausted.
+- `completed_at` is set only after Horizon confirms the transaction.
+
 ## Local setup
 
 1. **Prerequisites:** Node.js 18+
@@ -82,7 +90,7 @@ When refreshing it:
 1. Keep settlement IDs globally unique.
 2. Keep each settlement under the matching developer key and `developerId`.
 3. Use non-negative finite amounts and valid ISO-8601 `created_at` timestamps.
-4. Keep `tx_hash` as `null` for `pending` settlements and non-empty for `completed` settlements.
+4. Keep `tx_hash` as either `null` or a non-empty transaction hash for `pending` settlements, and non-empty for `completed` settlements.
 5. Update usage revenue so fixture summaries stay aligned with the live route semantics: `total_earned = completed + pending + usage` and `available_to_withdraw = usage`.
 
 Run `npm run lint`, `npm run typecheck`, and `npm test` after editing the fixture.
@@ -144,6 +152,8 @@ The app validates all environment variables at startup using [Zod](https://zod.d
 | `HORIZON_ENABLED` | No | `false` | Enable Horizon health check |
 | `HORIZON_URL` | If `HORIZON_ENABLED=true` | — | Horizon endpoint URL |
 | `HORIZON_TIMEOUT` | No | `2000` | Horizon timeout (ms) |
+| `SETTLEMENT_STATUS_SYNC_INTERVAL_MS` | No | `60000` | Settlement-status sync polling interval (ms) |
+| `SETTLEMENT_STATUS_SYNC_TIMEOUT_MS` | No | `5000` | Per-request Horizon timeout for settlement sync (ms) |
 | `HEALTH_CHECK_DB_TIMEOUT` | No | `2000` | DB health check timeout (ms) |
 | `APP_VERSION` | No | `1.0.0` | Reported in health check responses |
 | `LOG_LEVEL` | No | `info` | `trace` / `debug` / `info` / `warn` / `error` / `fatal` |
@@ -184,6 +194,8 @@ STELLAR_MAINNET_SETTLEMENT_CONTRACT_ID=CC...MAINNET_SETTLEMENT
 # Optional transaction builder overrides
 STELLAR_BASE_FEE=100
 STELLAR_TRANSACTION_TIMEOUT=300
+SETTLEMENT_STATUS_SYNC_INTERVAL_MS=60000
+SETTLEMENT_STATUS_SYNC_TIMEOUT_MS=5000
 ```
 
 Notes:

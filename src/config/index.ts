@@ -134,6 +134,11 @@ export const config = {
         }
       : undefined,
 
+  settlementSync: {
+    intervalMs: env.SETTLEMENT_STATUS_SYNC_INTERVAL_MS,
+    timeoutMs: env.SETTLEMENT_STATUS_SYNC_TIMEOUT_MS,
+  },
+
   stellar: {
     network: selectedNetwork,
     baseFee: String(env.STELLAR_BASE_FEE),

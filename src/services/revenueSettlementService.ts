@@ -2,16 +2,33 @@ import { Settlement, SettlementStore } from '../types/developer.js';
 import { ApiRegistry, UsageEvent, UsageStore } from '../types/gateway.js';
 import { SorobanSettlementClient } from './sorobanSettlement.js';
 import { randomUUID } from 'node:crypto';
+import { config } from '../config/index.js';
+import {
+  RETRIABLE_HTTP_STATUSES,
+  TransientError,
+  isTransientNetworkError,
+  withRetry,
+} from '../lib/retry.js';
 
 export interface RevenueSettlementOptions {
   /** Minimum accumulated USDC to trigger a payout (default: 5.00) */
   minPayoutUsdc?: number;
   /** Maximum number of events to process per developer per batch (to avoid hitting transaction limits) */
   maxEventsPerBatch?: number;
+  horizonUrl?: string;
+  fetchImpl?: typeof fetch;
+  horizonRequestTimeoutMs?: number;
+  horizonMaxRetries?: number;
+  horizonRetryBaseDelayMs?: number;
+}
+
+interface HorizonTransactionResponse {
+  successful?: boolean;
 }
 
 export class RevenueSettlementService {
   private batchTail: Promise<void> = Promise.resolve();
+  private reconcileTail: Promise<void> = Promise.resolve();
 
   constructor(
     private usageStore: UsageStore,
@@ -127,7 +144,7 @@ export class RevenueSettlementService {
       // 3. Update settlement status and events
       if (result.success && result.txHash) {
         try {
-          this.settlementStore.updateStatus(settlementId, 'completed', result.txHash);
+          this.settlementStore.updateStatus(settlementId, 'pending', result.txHash);
           this.usageStore.markAsSettled(eventIds, settlementId);
 
           processed += events.length;
@@ -149,6 +166,110 @@ export class RevenueSettlementService {
     }
 
     return { processed, settledAmount, errors };
+  }
+
+  async reconcilePendingSettlements(): Promise<{
+    checked: number;
+    completed: number;
+    failed: number;
+    errors: number;
+  }> {
+    const previousRun = this.reconcileTail.catch(() => undefined);
+    let releaseRun!: () => void;
+    this.reconcileTail = new Promise<void>((resolve) => {
+      releaseRun = resolve;
+    });
+
+    await previousRun;
+
+    try {
+      return await this.reconcilePendingSettlementsOnce();
+    } finally {
+      releaseRun();
+    }
+  }
+
+  private async reconcilePendingSettlementsOnce(): Promise<{
+    checked: number;
+    completed: number;
+    failed: number;
+    errors: number;
+  }> {
+    const pendingSettlements = this.settlementStore
+      .getPendingSettlements()
+      .filter((settlement) => Boolean(settlement.tx_hash));
+
+    let checked = 0;
+    let completed = 0;
+    let failed = 0;
+    let errors = 0;
+
+    for (const settlement of pendingSettlements) {
+      checked++;
+
+      try {
+        const horizonStatus = await this.checkSettlementTransaction(settlement.tx_hash!);
+
+        if (horizonStatus === 'completed') {
+          this.settlementStore.updateStatus(settlement.id, 'completed');
+          completed++;
+        } else if (horizonStatus === 'failed') {
+          this.settlementStore.updateStatus(settlement.id, 'failed');
+          failed++;
+        }
+      } catch (error) {
+        errors++;
+        console.error(
+          `Settlement ${settlement.id} could not be reconciled against Horizon:`,
+          this.getErrorMessage(error),
+        );
+      }
+    }
+
+    return { checked, completed, failed, errors };
+  }
+
+  private async checkSettlementTransaction(txHash: string): Promise<'completed' | 'failed'> {
+    const horizonUrl = this.options.horizonUrl ?? config.stellar.horizonUrl;
+    const requestTimeoutMs = this.options.horizonRequestTimeoutMs ?? config.settlementSync.timeoutMs;
+    const fetchImpl = this.options.fetchImpl ?? fetch;
+
+    const response = await withRetry(
+      async () => {
+        const url = new URL(`transactions/${encodeURIComponent(txHash)}`, horizonUrl).toString();
+        const res = await fetchImpl(url, {
+          headers: { accept: 'application/json' },
+          signal: AbortSignal.timeout(requestTimeoutMs),
+        });
+
+        if (RETRIABLE_HTTP_STATUSES.has(res.status)) {
+          throw new TransientError(`Horizon returned retriable status ${res.status}`);
+        }
+
+        if (res.status === 404) {
+          return 'failed' as const;
+        }
+
+        if (!res.ok) {
+          throw new Error(`Horizon returned non-success status ${res.status}`);
+        }
+
+        const body = (await res.json()) as HorizonTransactionResponse;
+        return body.successful === false ? 'failed' as const : 'completed' as const;
+      },
+      {
+        maxAttempts: (this.options.horizonMaxRetries ?? 3) + 1,
+        baseDelayMs: this.options.horizonRetryBaseDelayMs ?? 500,
+        shouldRetry: (error) => {
+          if (error instanceof DOMException && error.name === 'AbortError') {
+            return false;
+          }
+          return isTransientNetworkError(error);
+        },
+      },
+    );
+
+    return response;
   }
 
   private recordFailedSettlement(

@@ -4,7 +4,10 @@ export class InMemorySettlementStore implements SettlementStore {
   private settlements: Settlement[] = [];
 
   create(settlement: Settlement): void {
-    this.settlements.push(settlement);
+    this.settlements.push({
+      ...settlement,
+      completed_at: settlement.completed_at ?? null,
+    });
   }
 
   updateStatus(id: string, status: Settlement['status'], txHash?: string | null): void {
@@ -14,6 +17,7 @@ export class InMemorySettlementStore implements SettlementStore {
       if (txHash !== undefined) {
         s.tx_hash = txHash;
       }
+      s.completed_at = status === 'completed' ? new Date().toISOString() : null;
     }
   }
 
@@ -21,6 +25,12 @@ export class InMemorySettlementStore implements SettlementStore {
     return this.settlements
       .filter((s) => s.developerId === developerId)
       .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+  }
+
+  getPendingSettlements(): Settlement[] {
+    return this.settlements
+      .filter((s) => s.status === 'pending')
+      .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
   }
 
   /** Helper for tests */

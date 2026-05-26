@@ -5,6 +5,7 @@ export interface Settlement {
   status: 'pending' | 'completed' | 'failed';
   tx_hash: string | null;
   created_at: string; // ISO-8601
+  completed_at?: string | null;
 }
 
 export interface RevenueSummary {
@@ -27,4 +28,5 @@ export interface SettlementStore {
   create(settlement: Settlement): void;
   updateStatus(id: string, status: Settlement['status'], txHash?: string | null): void;
   getDeveloperSettlements(developerId: string): Settlement[];
+  getPendingSettlements(): Settlement[];
 }

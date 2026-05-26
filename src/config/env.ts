@@ -57,6 +57,8 @@ export const envSchema = z
       .default(false),
     HORIZON_URL: z.string().url().optional(),
     HORIZON_TIMEOUT: z.coerce.number().default(2_000),
+    SETTLEMENT_STATUS_SYNC_INTERVAL_MS: z.coerce.number().int().positive().default(60_000),
+    SETTLEMENT_STATUS_SYNC_TIMEOUT_MS: z.coerce.number().int().positive().default(5_000),
 
     // Stellar network configuration
     STELLAR_NETWORK: stellarNetworkSchema.optional(),

@@ -17,6 +17,8 @@ import { createBillingService } from './services/billingService.js';
 import { createRateLimiter } from './services/rateLimiter.js';
 import { createUsageStore } from './services/usageStore.js';
 import { createSettlementStore } from './services/settlementStore.js';
+import { RevenueSettlementService } from './services/revenueSettlementService.js';
+import { createSettlementStatusSyncJob } from './services/settlementStatusSyncJob.js';
 import { createApiRegistry } from './data/apiRegistry.js';
 import { ApiKey } from './types/gateway.js';
 import { config } from './config/index.js';
@@ -120,6 +122,23 @@ if (isDirectExecution) {
   const usageStore = createUsageStore();
   const settlementStore = createSettlementStore();
   const registry = createApiRegistry();
+  const revenueSettlementService = new RevenueSettlementService(
+    usageStore,
+    settlementStore,
+    registry,
+    {
+      distribute: async () => ({
+        success: false,
+        error: 'Runtime settlement distribution is not configured in this process',
+      }),
+    },
+    {
+      horizonRequestTimeoutMs: config.settlementSync.timeoutMs,
+    },
+  );
+  const settlementStatusSyncJob = createSettlementStatusSyncJob(revenueSettlementService, {
+    intervalMs: config.settlementSync.intervalMs,
+  });
 
   const apiKeys = new Map<string, ApiKey>([
     ['test-key-1', { key: 'test-key-1', developerId: 'dev_001', apiId: 'api_001' }],
@@ -165,6 +184,7 @@ if (isDirectExecution) {
   const PORT = config.port;
 
   const closeAllDataResources = async () => {
+    settlementStatusSyncJob.stop();
     await closeDb();
     await Promise.allSettled([
       closePgPool(),
@@ -177,6 +197,7 @@ if (isDirectExecution) {
   async function startServer() {
     try {
       await initializeDb();
+      settlementStatusSyncJob.start();
       
       const server = app.listen(PORT, () => {
         console.log(`Callora backend listening on http://localhost:${PORT}`);
