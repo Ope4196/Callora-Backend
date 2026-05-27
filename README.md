@@ -11,8 +11,13 @@ API gateway, usage metering, and billing services for the Callora API marketplac
 ## What's included
 
 - Health check: `GET /api/health`
-- Placeholder routes: `GET /api/apis`, `GET /api/usage`
+- Marketplace routes:
+  - `GET /api/apis`
+  - `GET /api/apis/:id`
+  - `POST /api/apis` for authenticated developers to register an API with priced endpoints
+- Usage route: `GET /api/usage`
 - JSON body parsing plus gateway API key authentication for upstream proxy routes
+- Per-user global REST rate limiting for authenticated `/api/billing`, `/api/usage`, `/api/developers`, `/api/vault`, and `/api/keys` traffic, with IP fallback for unauthenticated requests
 - In-memory `VaultRepository` with:
   - `create(userId, contractId, network)`
   - `findByUserId(userId, network)`
@@ -29,6 +34,29 @@ The gateway auth middleware performs prefix-based lookup, timing-safe full-key h
 
 See [docs/gateway-api-key-auth.md](./docs/gateway-api-key-auth.md) for the full flow, attached request fields, and failure responses.
 
+## API Registration
+
+Authenticated developers can register a marketplace API by calling `POST /api/apis` with:
+
+```json
+{
+  "name": "Weather API",
+  "description": "Forecast and current conditions",
+  "base_url": "https://api.weather.example.com",
+  "category": "weather",
+  "endpoints": [
+    {
+      "path": "/forecast",
+      "method": "GET",
+      "price_per_call_usdc": "0.01",
+      "description": "Daily forecast"
+    }
+  ]
+}
+```
+
+The request requires developer auth via `Authorization: Bearer ...` or `x-user-id` in local/test flows. Validation errors return HTTP `400` with field-level `details`, and successful writes are persisted atomically with their endpoint rows.
+
 ## Vault repository behavior
 
 - Enforces one vault per user per network.
@@ -41,13 +69,12 @@ See [docs/gateway-api-key-auth.md](./docs/gateway-api-key-auth.md) for the full 
 - Read methods support time-bounded lookups by `userId` or `apiId`, plus aggregate totals for user spend and API revenue.
 - Amounts are handled as smallest-unit `bigint` values in application code, even though the backing column is named `amount_usdc`.
 
-## Settlement status sync
+## Persistent developer revenue stores
 
-- Successful payout submissions remain `pending` with a `tx_hash` until Horizon confirms the on-chain outcome.
-- A background settlement-status sync job polls the active network Horizon URL from `config.stellar.horizonUrl`.
-- Confirmed transactions transition settlements to `completed`, while unsuccessful or missing transactions transition them to `failed`.
-- Transient Horizon failures are retried with exponential backoff and do not flip settlement status if retries are exhausted.
-- `completed_at` is set only after Horizon confirms the transaction.
+- The runtime now uses PostgreSQL-backed `SettlementStore` and `UsageStore` implementations so `/api/developers/revenue` survives process restarts.
+- Unsettled usage is persisted through `revenue_ledger`, and settlement batches are persisted through `settlements`.
+- The in-memory store factories are still available for unit tests and isolated local scenarios.
+- Apply `migrations/001_create_usage_events.sql`, `migrations/002_create_settlements.sql`, `migrations/003_create_revenue_ledger.sql`, and `migrations/005_add_persistent_store_columns.sql` before starting the API against PostgreSQL.
 
 ## Local setup
 
@@ -145,6 +172,8 @@ The app validates all environment variables at startup using [Zod](https://zod.d
 | `METRICS_API_KEY` | **Yes** | — | Key for `/api/metrics` in production |
 | `UPSTREAM_URL` | No | `http://localhost:4000` | Gateway upstream URL |
 | `PROXY_TIMEOUT_MS` | No | `30000` | Proxy request timeout (ms) |
+| `REST_RATE_LIMIT_WINDOW_MS` | No | `60000` | Window length for REST API rate limiting (ms) |
+| `REST_RATE_LIMIT_MAX_REQUESTS` | No | `100` | Max REST API requests allowed per user/IP per window |
 | `CORS_ALLOWED_ORIGINS` | No | `http://localhost:5173` | Comma-separated allowed origins |
 | `SOROBAN_RPC_ENABLED` | No | `false` | Enable Soroban RPC health check |
 | `SOROBAN_RPC_URL` | If `SOROBAN_RPC_ENABLED=true` | — | Soroban RPC endpoint URL |
@@ -203,5 +232,12 @@ Notes:
 - Deposit transaction building uses the configured network Horizon URL and validates vault contract ID when configured.
 - Deposit transaction building defaults to a `100` stroop fee and a `300` second timeout unless overridden.
 - Soroban settlement client uses the configured network RPC URL and settlement contract ID.
+
+### Stellar-aware route params
+
+- `GET /api/vault/balance` accepts an optional `network` query param.
+- Accepted values are `testnet` and `mainnet`.
+- When omitted, the route defaults `network` to `testnet`.
+- Invalid values are rejected consistently with a `400` validation response.
 
 This repo is part of [Callora](https://github.com/your-org/callora). Frontend: `callora-frontend`. Contracts: `callora-contracts`.

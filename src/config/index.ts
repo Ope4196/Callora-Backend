@@ -118,6 +118,11 @@ export const config = {
     timeoutMs: env.PROXY_TIMEOUT_MS,
   },
 
+  restRateLimit: {
+    windowMs: env.REST_RATE_LIMIT_WINDOW_MS,
+    maxRequests: env.REST_RATE_LIMIT_MAX_REQUESTS,
+  },
+
   sorobanRpc:
     env.SOROBAN_RPC_ENABLED && env.SOROBAN_RPC_URL
       ? {
