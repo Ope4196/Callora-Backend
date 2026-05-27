@@ -6,13 +6,15 @@ import { errorHandler } from "../middleware/errorHandler.js";
 import { requestIdMiddleware } from "../middleware/requestId.js";
 
 describe("gateway route - rate limiting", () => {
+  let now = 0;
+
   beforeEach(() => {
-    jest.useFakeTimers("modern" as unknown as any);
-    jest.setSystemTime(new Date("2026-03-30T00:00:00.000Z").getTime());
+    now = new Date("2026-03-30T00:00:00.000Z").getTime();
+    jest.spyOn(Date, "now").mockImplementation(() => now);
   });
 
   afterEach(() => {
-    jest.useRealTimers();
+    jest.restoreAllMocks();
   });
 
   test("returns 429 with Retry-After when rate limited", async () => {

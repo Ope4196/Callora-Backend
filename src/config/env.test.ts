@@ -8,9 +8,7 @@ const baseEnv = {
   METRICS_API_KEY: "test-metrics-key",
 };
 
-describe("env schema — BCRYPT_COST_FACTOR", () => {
-  // ── Unit Tests (Task 1.4) ──────────────────────────────────────────────────
-
+describe("env schema - BCRYPT_COST_FACTOR", () => {
   describe("unit tests", () => {
     it("defaults to 12 when BCRYPT_COST_FACTOR is omitted", () => {
       const result = envSchema.safeParse({ ...baseEnv });
@@ -67,10 +65,6 @@ describe("env schema — BCRYPT_COST_FACTOR", () => {
     });
   });
 
-  // ── Property-Based Tests ───────────────────────────────────────────────────
-
-  // Feature: bcrypt-cost-config, Property 1: valid cost factor parses to the correct integer
-  // Validates: Requirements 1.1, 2.1, 4.1
   it("Property 1: valid cost factor parses to the correct integer", () => {
     fc.assert(
       fc.property(fc.integer({ min: 10, max: 31 }), (n) => {
@@ -84,8 +78,6 @@ describe("env schema — BCRYPT_COST_FACTOR", () => {
     );
   });
 
-  // Feature: bcrypt-cost-config, Property 2: out-of-range values are rejected
-  // Validates: Requirements 1.2, 1.3, 5.1, 5.2
   it("Property 2: out-of-range values are rejected", () => {
     fc.assert(
       fc.property(
@@ -102,8 +94,6 @@ describe("env schema — BCRYPT_COST_FACTOR", () => {
     );
   });
 
-  // Feature: bcrypt-cost-config, Property 3: non-numeric strings are rejected
-  // Validates: Requirements 1.4, 5.3
   it("Property 3: non-numeric strings are rejected", () => {
     fc.assert(
       fc.property(
@@ -118,5 +108,46 @@ describe("env schema — BCRYPT_COST_FACTOR", () => {
       ),
       { numRuns: 100 },
     );
+  });
+});
+
+describe("env schema - rate limiter configuration", () => {
+  it("defaults to the in-memory store with the expected bucket settings", () => {
+    const result = envSchema.safeParse({ ...baseEnv });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.RATE_LIMIT_STORE).toBe("memory");
+      expect(result.data.RATE_LIMIT_MAX_REQUESTS).toBe(5);
+      expect(result.data.RATE_LIMIT_WINDOW_MS).toBe(60_000);
+      expect(result.data.RATE_LIMIT_PG_TABLE).toBe("gateway_rate_limit_buckets");
+    }
+  });
+
+  it("accepts a postgres-backed shared limiter configuration", () => {
+    const result = envSchema.safeParse({
+      ...baseEnv,
+      RATE_LIMIT_STORE: "postgres",
+      RATE_LIMIT_MAX_REQUESTS: "15",
+      RATE_LIMIT_WINDOW_MS: "120000",
+      RATE_LIMIT_PG_TABLE: "shared_gateway_limits",
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.RATE_LIMIT_STORE).toBe("postgres");
+      expect(result.data.RATE_LIMIT_MAX_REQUESTS).toBe(15);
+      expect(result.data.RATE_LIMIT_WINDOW_MS).toBe(120_000);
+      expect(result.data.RATE_LIMIT_PG_TABLE).toBe("shared_gateway_limits");
+    }
+  });
+
+  it("rejects unsafe postgres table names", () => {
+    const result = envSchema.safeParse({
+      ...baseEnv,
+      RATE_LIMIT_PG_TABLE: "rate-limits;drop table users",
+    });
+
+    expect(result.success).toBe(false);
   });
 });

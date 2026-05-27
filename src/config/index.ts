@@ -118,6 +118,13 @@ export const config = {
     timeoutMs: env.PROXY_TIMEOUT_MS,
   },
 
+  rateLimiter: {
+    maxRequests: env.RATE_LIMIT_MAX_REQUESTS,
+    windowMs: env.RATE_LIMIT_WINDOW_MS,
+    store: env.RATE_LIMIT_STORE,
+    postgresTable: env.RATE_LIMIT_PG_TABLE,
+  },
+
   sorobanRpc:
     env.SOROBAN_RPC_ENABLED && env.SOROBAN_RPC_URL
       ? {

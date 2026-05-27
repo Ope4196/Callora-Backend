@@ -2,7 +2,7 @@ import './config/env.js'
 import express from 'express';
 import helmet from 'helmet';
 import { initializeDb, closeDb } from './db/index.js';
-import { closePgPool } from './db.js';
+import { closePgPool, pool } from './db.js';
 import { closeDbPool } from './config/health.js';
 import { disconnectPrisma } from './lib/prisma.js';
 import { errorHandler } from './middleware/errorHandler.js';
@@ -14,7 +14,7 @@ import { createDeveloperRouter } from './routes/developerRoutes.js';
 import { createGatewayRouter } from './routes/gatewayRoutes.js';
 import { createProxyRouter } from './routes/proxyRoutes.js';
 import { createBillingService } from './services/billingService.js';
-import { createRateLimiter } from './services/rateLimiter.js';
+import { createConfiguredRateLimiter } from './services/rateLimiter.js';
 import { createUsageStore } from './services/usageStore.js';
 import { createSettlementStore } from './services/settlementStore.js';
 import { createApiRegistry } from './data/apiRegistry.js';
@@ -116,7 +116,15 @@ if (isDirectExecution) {
   };
 
   const billing = createBillingService(MOCK_DEVELOPER_BALANCES);
-  const rateLimiter = createRateLimiter(5, 60_000); // 5 reqs per minute
+  const rateLimiter = createConfiguredRateLimiter(
+    {
+      maxRequests: config.rateLimiter.maxRequests,
+      store: config.rateLimiter.store,
+      tableName: config.rateLimiter.postgresTable,
+      windowMs: config.rateLimiter.windowMs,
+    },
+    pool,
+  );
   const usageStore = createUsageStore();
   const settlementStore = createSettlementStore();
   const registry = createApiRegistry();

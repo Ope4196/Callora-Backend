@@ -137,6 +137,10 @@ The app validates all environment variables at startup using [Zod](https://zod.d
 | `METRICS_API_KEY` | **Yes** | — | Key for `/api/metrics` in production |
 | `UPSTREAM_URL` | No | `http://localhost:4000` | Gateway upstream URL |
 | `PROXY_TIMEOUT_MS` | No | `30000` | Proxy request timeout (ms) |
+| `RATE_LIMIT_MAX_REQUESTS` | No | `5` | Token bucket capacity per API key |
+| `RATE_LIMIT_WINDOW_MS` | No | `60000` | Token bucket refill window in milliseconds |
+| `RATE_LIMIT_STORE` | No | `memory` | `memory` for single-instance dev, `postgres` for shared multi-instance limits |
+| `RATE_LIMIT_PG_TABLE` | No | `gateway_rate_limit_buckets` | PostgreSQL table used when `RATE_LIMIT_STORE=postgres` |
 | `CORS_ALLOWED_ORIGINS` | No | `http://localhost:5173` | Comma-separated allowed origins |
 | `SOROBAN_RPC_ENABLED` | No | `false` | Enable Soroban RPC health check |
 | `SOROBAN_RPC_URL` | If `SOROBAN_RPC_ENABLED=true` | — | Soroban RPC endpoint URL |
@@ -148,6 +152,16 @@ The app validates all environment variables at startup using [Zod](https://zod.d
 | `APP_VERSION` | No | `1.0.0` | Reported in health check responses |
 | `LOG_LEVEL` | No | `info` | `trace` / `debug` / `info` / `warn` / `error` / `fatal` |
 | `GATEWAY_PROFILING_ENABLED` | No | `false` | Enable request profiling |
+
+## Shared Gateway Rate Limiting
+
+Gateway rate limiting uses the same token-bucket semantics in every environment:
+
+- each API key gets `RATE_LIMIT_MAX_REQUESTS` tokens
+- buckets refill back to full once `RATE_LIMIT_WINDOW_MS` has elapsed
+- rejected requests return the same `retryAfterMs` behavior as the in-memory limiter
+
+By default, the backend uses an in-memory store, which is convenient for local development but is scoped to a single process. For multi-instance deployments behind a load balancer, set `RATE_LIMIT_STORE=postgres` so all replicas read and update the same bucket rows in PostgreSQL.
 
 ## Production Shutdown Expectations
 

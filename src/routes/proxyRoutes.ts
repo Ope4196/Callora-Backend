@@ -104,7 +104,7 @@ export function createProxyRouter(deps: ProxyDeps): Router {
       }
 
       // 3. Rate-limit check
-      const rateResult = rateLimiter.check(apiKeyHeader);
+      const rateResult = await rateLimiter.check(apiKeyHeader);
       if (!rateResult.allowed) {
         const retryAfterSec = Math.ceil((rateResult.retryAfterMs ?? 1000) / 1000);
         res.set('Retry-After', String(retryAfterSec));

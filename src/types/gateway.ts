@@ -52,7 +52,7 @@ export interface BillingService {
 
 /** Interface for rate limiting. */
 export interface RateLimiter {
-  check(apiKey: string): RateLimitResult;
+  check(apiKey: string): Promise<RateLimitResult>;
 }
 
 /** Interface for recording and querying usage events. */
