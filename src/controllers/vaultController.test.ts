@@ -3,6 +3,16 @@ import express from 'express';
 import { VaultController } from './vaultController.js';
 import { InMemoryVaultRepository } from '../repositories/vaultRepository.js';
 import { errorHandler } from '../middleware/errorHandler.js';
+import { validate } from '../middleware/validate.js';
+import { stellarNetworkQuerySchema } from '../validators/networkSchema.js';
+
+jest.mock('better-sqlite3', () => {
+  return class MockDatabase {
+    prepare() { return { get: () => null }; }
+    exec() { }
+    close() { }
+  };
+});
 
 function createTestApp(vaultRepository: InMemoryVaultRepository, useJwtAuth = false) {
   const app = express();
@@ -54,7 +64,11 @@ function createTestApp(vaultRepository: InMemoryVaultRepository, useJwtAuth = fa
   }
 
   const vaultController = new VaultController(vaultRepository);
-  app.get('/api/vault/balance', vaultController.getBalance.bind(vaultController));
+  app.get(
+    '/api/vault/balance',
+    validate({ query: stellarNetworkQuerySchema }),
+    vaultController.getBalance.bind(vaultController),
+  );
 
   app.use(errorHandler);
   return app;
@@ -159,10 +173,11 @@ describe('VaultController - getBalance', () => {
         .set('x-user-id', 'user-1');
 
       expect(response.status).toBe(400);
-      expect(response.body).toHaveProperty('error');
-      expect(response.body.error).toContain('network must be either');
-      expect(response.body.error).toContain('testnet');
-      expect(response.body.error).toContain('mainnet');
+      expect(response.body).toHaveProperty('code', 'VALIDATION_ERROR');
+      expect(response.body).toHaveProperty('message', 'Request validation failed');
+      expect(response.body.details[0]).toMatchObject({
+        field: 'query.network',
+      });
     });
 
     it('returns 400 for empty network parameter', async () => {
@@ -174,7 +189,8 @@ describe('VaultController - getBalance', () => {
         .set('x-user-id', 'user-1');
 
       expect(response.status).toBe(400);
-      expect(response.body).toHaveProperty('error');
+      expect(response.body).toHaveProperty('code', 'VALIDATION_ERROR');
+      expect(response.body.details[0]).toHaveProperty('field', 'query.network');
     });
 
     it('returns 400 for network parameter with only whitespace', async () => {
@@ -186,7 +202,8 @@ describe('VaultController - getBalance', () => {
         .set('x-user-id', 'user-1');
 
       expect(response.status).toBe(400);
-      expect(response.body).toHaveProperty('error');
+      expect(response.body).toHaveProperty('code', 'VALIDATION_ERROR');
+      expect(response.body.details[0]).toHaveProperty('field', 'query.network');
     });
 
     it('accepts case-sensitive network parameters', async () => {
@@ -325,7 +342,7 @@ describe('VaultController - getBalance', () => {
         .get('/api/vault/balance')
         .set('x-user-id', '   '); // whitespace only
 
-      expect(response.status).toBe(404); // Will be treated as authenticated but vault not found
+      expect(response.status).toBe(401);
     });
   });
 
@@ -377,7 +394,7 @@ describe('VaultController - getBalance', () => {
           .set('x-user-id', 'user-1');
 
         expect(response.status).toBe(400);
-        expect(response.body).toHaveProperty('error');
+        expect(response.body).toHaveProperty('code', 'VALIDATION_ERROR');
       }
     });
 
@@ -493,8 +510,9 @@ describe('VaultController - getBalance', () => {
         .get('/api/vault/balance?network=invalid')
         .set('x-user-id', 'user-1');
       expect(validationResponse.status).toBe(400);
-      expect(validationResponse.body).toHaveProperty('error');
-      expect(typeof validationResponse.body.error).toBe('string');
+      expect(validationResponse.body).toHaveProperty('message');
+      expect(typeof validationResponse.body.message).toBe('string');
+      expect(validationResponse.body).toHaveProperty('code', 'VALIDATION_ERROR');
     });
   });
 });

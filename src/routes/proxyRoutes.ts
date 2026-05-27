@@ -217,15 +217,32 @@ export function createProxyRouter(deps: ProxyDeps): Router {
 
       // 8. Keep metering and billing consistent after a recordable response.
       if (config.recordableStatuses(upstreamStatus)) {
-        await reconcileUsageAndBilling({
-          billing,
-          usageStore,
-          requestId,
-          apiKeyHeader,
-          keyRecord,
-          apiEntry,
-          endpoint,
-          upstreamStatus,
+        setImmediate(() => {
+          void (async () => {
+            try {
+              const recorded = await usageStore.record({
+                id: randomUUID(), // ID of the usage event itself
+                requestId,        // Idempotency key
+                apiKey: apiKeyHeader,
+                apiKeyId: keyRecord.id,
+                apiId: String(apiEntry.id),
+                endpointId: endpoint.endpointId,
+                userId: keyRecord.userId,
+                amountUsdc: endpoint.priceUsdc,
+                statusCode: upstreamStatus,
+                timestamp: new Date().toISOString(),
+              });
+
+              // Only deduct billing if we haven't processed this requestId before
+              if (recorded && endpoint.priceUsdc > 0) {
+                billing.deductCredit(keyRecord.userId, endpoint.priceUsdc).catch((err) => {
+                  console.error('Background billing deduction failed:', err);
+                });
+              }
+            } catch (err) {
+              console.error('Background usage recording failed:', err);
+            }
+          })();
         });
       }
     } catch (error) {
