@@ -496,25 +496,6 @@ export const createApp = (dependencies?: Partial<AppDependencies>) => {
     vaultController.getBalance(req, res);
   });
 
-  // Revoke API key endpoint
-  app.delete('/api/keys/:id', requireAuth, (req, res: express.Response<unknown, AuthenticatedLocals>, next) => {
-    const user = res.locals.authenticatedUser;
-    if (!user) {
-      next(new UnauthorizedError());
-      return;
-    }
-
-    const { id } = req.params;
-    const result = apiKeyRepository.revoke(id, user.id);
-
-    if (result === 'forbidden') {
-      next(new ForbiddenError());
-      return;
-    }
-
-    res.status(204).send();
-  });
-
   /**
    * POST /api/developers/apis
    *
