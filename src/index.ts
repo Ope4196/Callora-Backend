@@ -7,8 +7,10 @@ import { closeDbPool } from './config/health.js';
 import { disconnectPrisma } from './lib/prisma.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { createGatewayIpAllowlist } from './middleware/ipAllowlist.js';
+import { awaitWebhookDispatcherIdle, stopWebhookDispatching } from './webhooks/webhook.dispatcher.js';
 import type { Socket } from 'net';
 import type { Server } from 'http';
+import type { RequestHandler } from 'express';
 
 import { createDeveloperRouter } from './routes/developerRoutes.js';
 import { createGatewayRouter } from './routes/gatewayRoutes.js';
@@ -32,6 +34,73 @@ interface GracefulShutdownOptions {
   closeDatabase: () => Promise<void>;
   logger?: Pick<typeof console, 'log' | 'warn' | 'error'>;
   timeoutMs?: number;
+  subsystems?: DrainableSubsystem[];
+}
+
+export interface DrainableSubsystem {
+  name: string;
+  beginShutdown: () => void | Promise<void>;
+  awaitIdle: () => Promise<void>;
+}
+
+export function createInFlightDrainTracker(name: string): {
+  middleware: RequestHandler;
+  subsystem: DrainableSubsystem;
+} {
+  let active = 0;
+  let accepting = true;
+  const waiters = new Set<() => void>();
+
+  const notifyIfIdle = () => {
+    if (active === 0) {
+      for (const resolve of waiters) {
+        resolve();
+      }
+      waiters.clear();
+    }
+  };
+
+  const middleware: RequestHandler = (_req, res, next) => {
+    active += 1;
+    let settled = false;
+
+    const finish = () => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      active = Math.max(0, active - 1);
+      notifyIfIdle();
+    };
+
+    if (!accepting) {
+      res.setHeader('Connection', 'close');
+    }
+
+    res.once('finish', finish);
+    res.once('close', finish);
+    next();
+  };
+
+  return {
+    middleware,
+    subsystem: {
+      name,
+      beginShutdown() {
+        accepting = false;
+      },
+      awaitIdle() {
+        if (active === 0) {
+          return Promise.resolve();
+        }
+
+        return new Promise<void>((resolve) => {
+          waiters.add(resolve);
+        });
+      },
+    },
+  };
 }
 
 export function createGracefulShutdownHandler({
@@ -40,6 +109,7 @@ export function createGracefulShutdownHandler({
   closeDatabase,
   logger = console,
   timeoutMs = 10_000,
+  subsystems = [],
 }: GracefulShutdownOptions) {
   let inFlight: Promise<number> | null = null;
 
@@ -57,18 +127,64 @@ export function createGracefulShutdownHandler({
         }
       }, timeoutMs);
 
-      server.close(async (error?: Error) => {
-        clearTimeout(timeout);
-
-        if (error) {
-          logger.error('Error while closing HTTP server', error);
-          resolve(1);
-          return;
+      const drainSubsystems = async (): Promise<boolean> => {
+        for (const subsystem of subsystems) {
+          try {
+            await subsystem.beginShutdown();
+          } catch (error) {
+            logger.error(`Error while stopping subsystem ${subsystem.name}`, error);
+            return false;
+          }
         }
+
+        const results = await Promise.race([
+          Promise.allSettled(
+            subsystems.map(async (subsystem) => {
+              await subsystem.awaitIdle();
+            }),
+          ),
+          new Promise<'timeout'>((timeoutResolve) => {
+            setTimeout(() => timeoutResolve('timeout'), timeoutMs);
+          }),
+        ]);
+
+        if (results === 'timeout') {
+          logger.warn(`Timed out waiting for in-flight subsystem work after ${timeoutMs}ms`);
+          return true;
+        }
+
+        let ok = true;
+        for (const [index, result] of results.entries()) {
+          if (result.status === 'rejected') {
+            ok = false;
+            logger.error(
+              `Error while draining subsystem ${subsystems[index]?.name ?? 'unknown'}`,
+              result.reason,
+            );
+          }
+        }
+
+        return ok;
+      };
+
+      const closeServer = new Promise<boolean>((closeResolve) => {
+        server.close((error?: Error) => {
+          if (error) {
+            logger.error('Error while closing HTTP server', error);
+            closeResolve(false);
+            return;
+          }
+
+          closeResolve(true);
+        });
+      });
+
+      void Promise.all([closeServer, drainSubsystems()]).then(async ([serverClosed, drained]) => {
+        clearTimeout(timeout);
 
         try {
           await closeDatabase();
-          resolve(0);
+          resolve(serverClosed && drained ? 0 : 1);
         } catch (closeError) {
           logger.error('Error while closing data resources', closeError);
           resolve(1);
@@ -175,6 +291,16 @@ if (isDirectExecution) {
       allowedHosts: config.proxy.allowedHosts,
     },
   });
+  const proxyDrainTracker = createInFlightDrainTracker('gateway-proxy');
+  const shutdownSubsystems: DrainableSubsystem[] = [
+    proxyDrainTracker.subsystem,
+    {
+      name: 'webhook-dispatcher',
+      beginShutdown: stopWebhookDispatching,
+      awaitIdle: awaitWebhookDispatcherIdle,
+    },
+  ];
+  app.use('/v1/call', proxyDrainTracker.middleware);
   app.use('/v1/call', proxyRouter);
 
 
@@ -217,6 +343,7 @@ if (isDirectExecution) {
         server,
         activeConnections,
         closeDatabase: closeAllDataResources,
+        subsystems: shutdownSubsystems,
       });
 
       const onSignal = (signal: NodeJS.Signals) => {

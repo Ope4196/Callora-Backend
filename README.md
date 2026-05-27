@@ -231,8 +231,9 @@ Each dependency uses its own bounded timeout, so a hung database or remote Stell
 ## Production Shutdown Expectations
 
 - The server listens for `SIGTERM` and `SIGINT` and performs a graceful shutdown.
-- On shutdown, it stops accepting new HTTP requests, waits for active connections to finish, and closes database resources.
+- On shutdown, it stops accepting new HTTP requests, drains in-flight `/v1/call` proxy work, waits for active webhook deliveries to finish, and then closes database resources.
 - A 30 second timeout is enforced for in-flight connections; lingering sockets are destroyed to prevent hung termination.
+- Background workers should stop scheduling new runs as soon as shutdown begins and finish any in-flight work inside the same drain window.
 - Shutdown hooks are registered with `process.once(...)` to avoid duplicate execution during restarts.
 - The dev workflow (`npm run dev` with `tsx watch`) is preserved. Restarts trigger the same graceful path instead of abrupt termination.
 
