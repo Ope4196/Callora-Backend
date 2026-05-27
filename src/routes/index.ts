@@ -1,15 +1,16 @@
 import { Router, type RequestHandler, type Router as ExpressRouter } from 'express';
 import healthRouter from './health.js';
-import apisRouter from './apis.js';
 import usageRouter from './usage.js';
 import billingRouter from './billing.js';
+import type { RequestHandler } from 'express';
 
 export interface ApiRouterDeps {
   restRateLimit?: RequestHandler;
 }
 
-export function createApiRouter(deps: ApiRouterDeps = {}): ExpressRouter {
-  const router: ExpressRouter = Router();
+router.use('/health', healthRouter);
+router.use('/usage', usageRouter);
+router.use('/billing', billingRouter);
 
   router.use('/health', healthRouter);
   router.use('/apis', apisRouter);
