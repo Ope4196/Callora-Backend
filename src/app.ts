@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
+import { z } from 'zod';
 import adminRouter from './routes/admin.js';
 import routes from './routes/index.js';
 import { createApisRouter } from './routes/apis.js';
@@ -35,6 +36,7 @@ import { DepositController } from './controllers/depositController.js';
 import { VaultController } from './controllers/vaultController.js';
 import { TransactionBuilderService } from './services/transactionBuilder.js';
 import { requestIdMiddleware } from './middleware/requestId.js';
+import { validate } from './middleware/validate.js';
 import { requestLogger } from './middleware/logging.js';
 import { createConfiguredRestRateLimitMiddleware } from './middleware/restRateLimit.js';
 import { metricsMiddleware, metricsEndpoint } from './metrics.js';
@@ -72,6 +74,10 @@ const parseDate = (value: unknown): Date | null => {
   }
   return date;
 };
+
+const vaultBalanceQuerySchema = z.object({
+  network: z.enum(['testnet', 'mainnet']).optional(),
+});
 
 
 

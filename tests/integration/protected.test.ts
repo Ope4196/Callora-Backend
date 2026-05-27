@@ -224,8 +224,8 @@ function buildRealApp() {
 /** Standard assertion for an unauthenticated response from the errorHandler */
 function expectUnauthorizedShape(res: request.Response) {
   expect(res.status).toBe(401);
-  expect(res.body).toHaveProperty('error');
-  expect(typeof res.body.error).toBe('string');
+  expect(res.body).toHaveProperty('message');
+  expect(typeof res.body.message).toBe('string');
   expect(res.body).toHaveProperty('code');
   expect(typeof res.body.code).toBe('string');
   expect(res.body).toHaveProperty('requestId');
@@ -268,7 +268,7 @@ describe('requireAuth – rejects unauthenticated requests on all protected rout
         if (body) req.send(body);
         const res = await req;
         expectUnauthorizedShape(res);
-        expect(res.body.error).toBe('Unauthorized');
+        expect(res.body.message).toBe('Unauthorized');
         expect(res.body.code).toBe('UNAUTHORIZED');
       });
 
@@ -277,8 +277,8 @@ describe('requireAuth – rejects unauthenticated requests on all protected rout
         if (body) req.send(body);
         const res = await req;
         expectUnauthorizedShape(res);
-        expect(res.body.error).toBe('Missing token');
-        expect(res.body.code).toBe('MISSING_TOKEN');
+        expect(res.body.message).toBe('Invalid authorization header');
+        expect(res.body.code).toBe('INVALID_AUTH_HEADER');
       });
 
       it('returns 401 with non-Bearer scheme (Basic)', async () => {
@@ -286,7 +286,7 @@ describe('requireAuth – rejects unauthenticated requests on all protected rout
         if (body) req.send(body);
         const res = await req;
         expectUnauthorizedShape(res);
-        expect(res.body.error).toBe('Invalid authorization header');
+        expect(res.body.message).toBe('Invalid authorization header');
         expect(res.body.code).toBe('INVALID_AUTH_HEADER');
       });
 
@@ -295,7 +295,7 @@ describe('requireAuth – rejects unauthenticated requests on all protected rout
         if (body) req.send(body);
         const res = await req;
         expectUnauthorizedShape(res);
-        expect(res.body.error).toBe('Invalid authorization header');
+        expect(res.body.message).toBe('Invalid authorization header');
         expect(res.body.code).toBe('INVALID_AUTH_HEADER');
       });
 
@@ -304,7 +304,7 @@ describe('requireAuth – rejects unauthenticated requests on all protected rout
         if (body) req.send(body);
         const res = await req;
         expectUnauthorizedShape(res);
-        expect(res.body.error).toBe('Invalid authorization header');
+        expect(res.body.message).toBe('Invalid authorization header');
         expect(res.body.code).toBe('INVALID_AUTH_HEADER');
       });
 
@@ -313,7 +313,7 @@ describe('requireAuth – rejects unauthenticated requests on all protected rout
         if (body) req.send(body);
         const res = await req;
         expectUnauthorizedShape(res);
-        expect(res.body.error).toBe('Unauthorized');
+        expect(res.body.message).toBe('Unauthorized');
         expect(res.body.code).toBe('UNAUTHORIZED');
       });
 
@@ -322,7 +322,7 @@ describe('requireAuth – rejects unauthenticated requests on all protected rout
         if (body) req.send(body);
         const res = await req;
         expectUnauthorizedShape(res);
-        expect(res.body.error).toBe('Unauthorized');
+        expect(res.body.message).toBe('Unauthorized');
         expect(res.body.code).toBe('UNAUTHORIZED');
       });
     },
@@ -437,7 +437,7 @@ describe('requireAuth – accepts valid credentials on protected routes', () => 
       .set('x-user-id', 'user-42');
 
     expect(res.status).toBe(401);
-    expect(res.body.error).toBe('Invalid authorization header');
+    expect(res.body.message).toBe('Invalid authorization header');
     expect(res.body.code).toBe('INVALID_AUTH_HEADER');
   });
 });
@@ -464,7 +464,7 @@ describe('requireAuth – error body consistency', () => {
     expect(res.body).not.toHaveProperty('statusCode');
     // Only expected keys
     const keys = Object.keys(res.body);
-    expect(keys).toEqual(expect.arrayContaining(['error', 'code', 'requestId']));
+    expect(keys).toEqual(expect.arrayContaining(['message', 'code', 'requestId']));
     expect(keys.length).toBe(3);
   });
 
@@ -476,7 +476,7 @@ describe('requireAuth – error body consistency', () => {
     for (const res of [res1, res2, res3]) {
       expect(res.status).toBe(401);
       expect(res.body).toEqual({
-        error: 'Unauthorized',
+        message: 'Unauthorized',
         code: 'UNAUTHORIZED',
         requestId: 'mock-uuid-1234',
       });

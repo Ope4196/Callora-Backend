@@ -154,6 +154,30 @@ cp .env.example .env
 
 The app validates all environment variables at startup using [Zod](https://zod.dev). If a required variable is missing, the app will exit immediately with a clear error message.
 
+## Error Responses
+
+Application errors are returned through the shared Express `errorHandler` using a consistent JSON envelope:
+
+```json
+{
+  "code": "VALIDATION_ERROR",
+  "message": "Request validation failed",
+  "requestId": "req_123",
+  "details": [
+    {
+      "field": "query.network",
+      "message": "Invalid option: expected one of \"testnet\"|\"mainnet\"",
+      "code": "INVALID_VALUE"
+    }
+  ]
+}
+```
+
+- `code` is a stable machine-readable error code.
+- `message` is the user-facing error message.
+- `requestId` matches the `X-Request-Id` response header for tracing.
+- `details` is included for validation failures and contains field paths such as `body.endpoints[0].path` or `query.network`.
+
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `PORT` | No | `3000` | HTTP port |
