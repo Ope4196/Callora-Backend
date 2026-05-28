@@ -28,6 +28,20 @@ function createUsageEventsRepository() {
       created_at TIMESTAMP NOT NULL DEFAULT NOW()
     );
 
+    CREATE TABLE apis (
+      id VARCHAR(255) PRIMARY KEY,
+      developer_id VARCHAR(255) NOT NULL
+    );
+
+    CREATE TABLE revenue_ledger (
+      id BIGSERIAL PRIMARY KEY,
+      api_id VARCHAR(255) NOT NULL,
+      developer_id VARCHAR(255) NOT NULL,
+      amount_usdc NUMERIC(20, 0) NOT NULL,
+      usage_event_id BIGINT UNIQUE REFERENCES usage_events(id),
+      created_at TIMESTAMP NOT NULL DEFAULT NOW()
+    );
+
     CREATE INDEX idx_usage_events_user_created ON usage_events(user_id, created_at);
     CREATE INDEX idx_usage_events_api_created ON usage_events(api_id, created_at);
   `);
@@ -344,6 +358,11 @@ test('repository validates blank identifiers, invalid ranges, negative amounts, 
       repository.findByApiId('api-weather', undefined, new Date('nope')),
       /to must be a valid date\./,
     );
+
+    await assert.rejects(
+      repository.findUnindexedRevenueLedgerEvents('bad-cursor'),
+      /cursor must be a non-negative integer string\./,
+    );
   } finally {
     await pool.end();
   }
@@ -460,4 +479,112 @@ test('repository accepts bigint values returned directly from the database drive
 
   assert.equal(events[0]?.id, '7');
   assert.equal(events[0]?.amount, 450n);
+});
+
+test('findUnindexedRevenueLedgerEvents resolves developer ownership from apis and skips indexed rows', async () => {
+  const { repository, pool } = createUsageEventsRepository();
+
+  try {
+    await pool.query(
+      'INSERT INTO apis (id, developer_id) VALUES ($1, $2), ($3, $4)',
+      ['api-weather', 'dev-weather', 'api-chat', 'dev-chat'],
+    );
+
+    await repository.create({
+      userId: 'consumer-1',
+      apiId: 'api-weather',
+      endpointId: 'endpoint-1',
+      apiKeyId: 'key-1',
+      amount: 100n,
+      requestId: 'req-ledger-1',
+      createdAt: new Date('2026-02-01T10:00:00.000Z'),
+    });
+    await repository.create({
+      userId: 'consumer-2',
+      apiId: 'api-chat',
+      endpointId: 'endpoint-2',
+      apiKeyId: 'key-2',
+      amount: 250n,
+      requestId: 'req-ledger-2',
+      createdAt: new Date('2026-02-02T10:00:00.000Z'),
+    });
+    await repository.create({
+      userId: 'consumer-3',
+      apiId: 'api-missing',
+      endpointId: 'endpoint-3',
+      apiKeyId: 'key-3',
+      amount: 999n,
+      requestId: 'req-ledger-3',
+      createdAt: new Date('2026-02-03T10:00:00.000Z'),
+    });
+
+    await pool.query(
+      `
+        INSERT INTO revenue_ledger (
+          api_id,
+          developer_id,
+          amount_usdc,
+          usage_event_id,
+          created_at
+        )
+        VALUES ($1, $2, $3, $4, $5)
+      `,
+      ['api-weather', 'dev-weather', '100', '1', new Date('2026-02-01T10:00:00.000Z')],
+    );
+
+    const events = await repository.findUnindexedRevenueLedgerEvents();
+
+    assert.deepEqual(events, [
+      {
+        usageEventId: '2',
+        apiId: 'api-chat',
+        developerId: 'dev-chat',
+        amount: 250n,
+        createdAt: new Date('2026-02-02T10:00:00.000Z'),
+      },
+    ]);
+  } finally {
+    await pool.end();
+  }
+});
+
+test('indexRevenueLedgerEvent inserts idempotently by usageEventId', async () => {
+  const { repository, pool } = createUsageEventsRepository();
+
+  try {
+    await repository.create({
+      userId: 'consumer-1',
+      apiId: 'api-weather',
+      endpointId: 'endpoint-1',
+      apiKeyId: 'key-1',
+      amount: 1500n,
+      requestId: 'req-ledger-insert',
+      createdAt: new Date('2026-02-05T10:00:00.000Z'),
+    });
+
+    const insertedFirst = await repository.indexRevenueLedgerEvent({
+      usageEventId: '1',
+      apiId: 'api-weather',
+      developerId: 'dev-weather',
+      amount: 1500n,
+      createdAt: new Date('2026-02-05T10:00:00.000Z'),
+    });
+    const insertedDuplicate = await repository.indexRevenueLedgerEvent({
+      usageEventId: '1',
+      apiId: 'api-weather',
+      developerId: 'dev-weather',
+      amount: 1500n,
+      createdAt: new Date('2026-02-05T10:00:00.000Z'),
+    });
+    const count = await pool.query(
+      'SELECT COUNT(*)::text AS count FROM revenue_ledger WHERE usage_event_id = $1',
+      ['1'],
+    );
+
+    assert.equal(insertedFirst, true);
+    assert.equal(insertedDuplicate, false);
+    assert.equal(count.rows[0]?.count, '1');
+  } finally {
+    await pool.end();
+  }
 });

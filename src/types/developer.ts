@@ -1,5 +1,18 @@
 import type { Awaitable } from './awaitable.js';
 
+export const developerCategoryEnum = [
+  'analytics',
+  'developer-tools',
+  'finance',
+  'payments',
+  'security',
+  'ai',
+  'data',
+  'productivity',
+] as const;
+
+export type DeveloperCategory = (typeof developerCategoryEnum)[number];
+
 export interface Settlement {
   id: string;
   developerId: string; // the dev receiving the payout
@@ -24,6 +37,13 @@ export interface DeveloperRevenueResponse {
     offset: number;
     total: number;
   };
+}
+
+export interface UpdateDeveloperProfileInput {
+  name?: string | null;
+  website?: string | null;
+  description?: string | null;
+  category?: DeveloperCategory | null;
 }
 
 export interface SettlementStore {

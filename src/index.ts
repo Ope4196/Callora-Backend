@@ -18,6 +18,10 @@ import { createProxyRouter } from './routes/proxyRoutes.js';
 import { defaultDeveloperRepository } from './repositories/developerRepository.js';
 import { createBillingService } from './services/billingService.js';
 import { createRateLimiter } from './services/rateLimiter.js';
+import { PgUsageEventsRepository } from './repositories/usageEventsRepository.pg.js';
+import { createRevenueLedgerIndexerJob } from './services/revenueLedgerIndexer.js';
+import { RevenueSettlementService } from './services/revenueSettlementService.js';
+import { createSettlementStatusSyncJob } from './services/settlementStatusSyncJob.js';
 import { createPostgresUsageStore } from './services/usageStore.js';
 import { createPostgresSettlementStore } from './services/settlementStore.js';
 import { createApiRegistry } from './data/apiRegistry.js';
@@ -237,6 +241,11 @@ if (isDirectExecution) {
   const rateLimiter = createRateLimiter(5, 60_000); // 5 reqs per minute
   const usageStore = createPostgresUsageStore(pool);
   const settlementStore = createPostgresSettlementStore(pool);
+  const usageEventsRepository = new PgUsageEventsRepository(pool);
+  const revenueLedgerIndexerJob = createRevenueLedgerIndexerJob(usageEventsRepository, {
+    intervalMs: config.revenueLedgerIndexer.intervalMs,
+    batchSize: config.revenueLedgerIndexer.batchSize,
+  });
   const registry = createApiRegistry();
   const revenueSettlementService = new RevenueSettlementService(
     usageStore,
@@ -295,6 +304,11 @@ if (isDirectExecution) {
   const shutdownSubsystems: DrainableSubsystem[] = [
     proxyDrainTracker.subsystem,
     {
+      name: 'revenue-ledger-indexer',
+      beginShutdown: () => revenueLedgerIndexerJob.beginShutdown(),
+      awaitIdle: () => revenueLedgerIndexerJob.awaitIdle(),
+    },
+    {
       name: 'webhook-dispatcher',
       beginShutdown: stopWebhookDispatching,
       awaitIdle: awaitWebhookDispatcherIdle,
@@ -312,6 +326,7 @@ if (isDirectExecution) {
   const PORT = config.port;
 
   const closeAllDataResources = async () => {
+    revenueLedgerIndexerJob.stop();
     settlementStatusSyncJob.stop();
     await closeDb();
     await Promise.allSettled([
@@ -325,6 +340,7 @@ if (isDirectExecution) {
   async function startServer() {
     try {
       await initializeDb();
+      revenueLedgerIndexerJob.start();
       settlementStatusSyncJob.start();
       
       const server = app.listen(PORT, () => {

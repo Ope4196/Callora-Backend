@@ -160,6 +160,10 @@ export const config = {
     intervalMs: env.SETTLEMENT_STATUS_SYNC_INTERVAL_MS,
     timeoutMs: env.SETTLEMENT_STATUS_SYNC_TIMEOUT_MS,
   },
+  revenueLedgerIndexer: {
+    intervalMs: env.REVENUE_LEDGER_INDEXER_INTERVAL_MS,
+    batchSize: env.REVENUE_LEDGER_INDEXER_BATCH_SIZE,
+  },
 
   stellar: {
     network: selectedNetwork,

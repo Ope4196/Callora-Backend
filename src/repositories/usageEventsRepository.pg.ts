@@ -31,12 +31,22 @@ export interface BillingUsageEvent {
   createdAt: Date;
 }
 
-export interface UsageEventsPgRepository extends UsageEventsRepository {
+export interface RevenueLedgerUsageEvent {
+  usageEventId: string;
+  apiId: string;
+  developerId: string;
+  amount: bigint;
+  createdAt: Date;
+}
+
+export interface UsageEventsPgRepository {
   create(event: CreateUsageEventInput): Promise<BillingUsageEvent>;
   findByUserId(userId: string, from?: Date, to?: Date, limit?: number, offset?: number): Promise<BillingUsageEvent[]>;
   findByApiId(apiId: string, from?: Date, to?: Date, limit?: number, offset?: number): Promise<BillingUsageEvent[]>;
   getTotalSpentByUser(userId: string, from?: Date, to?: Date): Promise<bigint>;
   getTotalRevenueByApi(apiId: string, from?: Date, to?: Date): Promise<bigint>;
+  findUnindexedRevenueLedgerEvents(cursor?: string, limit?: number): Promise<RevenueLedgerUsageEvent[]>;
+  indexRevenueLedgerEvent(event: RevenueLedgerUsageEvent): Promise<boolean>;
 }
 
 export interface UsageEventsRepositoryQueryable {
@@ -58,6 +68,14 @@ interface UsageEventRow {
 interface TotalRow {
   total: string | number | bigint | null;
   count?: string | number;
+}
+
+interface RevenueLedgerUsageEventRow {
+  usage_event_id: string | number | bigint;
+  api_id: string;
+  developer_id: string;
+  amount_usdc: string | number | bigint;
+  created_at: Date | string;
 }
 
 const assertNonEmpty = (value: string, fieldName: string): string => {
@@ -101,6 +119,19 @@ const normalizeLimit = (limit?: number): number | undefined => {
   }
 
   return limit;
+};
+
+const normalizeCursor = (cursor?: string): string | undefined => {
+  if (cursor === undefined) {
+    return undefined;
+  }
+
+  const trimmed = cursor.trim();
+  if (!/^\d+$/.test(trimmed)) {
+    throw new Error('cursor must be a non-negative integer string.');
+  }
+
+  return trimmed;
 };
 
 const toBigInt = (value: string | number | bigint | null, fieldName: string): bigint => {
@@ -147,14 +178,14 @@ const mapUsageEventRow = (row: UsageEventRow): BillingUsageEvent => ({
   createdAt: row.created_at instanceof Date ? row.created_at : new Date(row.created_at),
 });
 
-const mapToUsageEvent = (row: UsageEventRow): UsageEvent => ({
-  id: String(row.id),
-  developerId: row.user_id, // For now assuming user_id maps to developerId in this context
+const mapRevenueLedgerUsageEventRow = (
+  row: RevenueLedgerUsageEventRow,
+): RevenueLedgerUsageEvent => ({
+  usageEventId: String(row.usage_event_id),
   apiId: row.api_id,
-  endpoint: row.endpoint_id,
-  userId: row.user_id,
-  occurredAt: row.created_at instanceof Date ? row.created_at : new Date(row.created_at),
-  revenue: toBigInt(row.amount_usdc, 'amount_usdc'),
+  developerId: row.developer_id,
+  amount: toBigInt(row.amount_usdc, 'amount_usdc'),
+  createdAt: row.created_at instanceof Date ? row.created_at : new Date(row.created_at),
 });
 
 const appendDateFilters = (params: unknown[], clauses: string[], from?: Date, to?: Date): void => {
@@ -297,122 +328,69 @@ export class PgUsageEventsRepository implements UsageEventsPgRepository {
     return this.sumByColumn('api_id', assertNonEmpty(apiId, 'apiId'), from, to);
   }
 
-  async developerOwnsApi(developerId: string, apiId: string): Promise<boolean> {
-    // This is a simplified check: does the developer have any events for this API?
-    // In a real system, this should check the apis table.
-    const result = await this.db.query<{ count: string }>(
-      `SELECT COUNT(*)::text as count FROM usage_events WHERE user_id = $1 AND api_id = $2 LIMIT 1`,
-      [developerId, apiId]
-    );
-    return parseInt(result.rows[0]?.count ?? '0', 10) > 0;
-  }
-
-  async aggregateByDeveloper(developerId: string): Promise<UsageStats[]> {
-    const result = await this.db.query<{ api_id: string; calls: string; revenue: string }>(
-      `
-        SELECT
-          api_id,
-          COUNT(*)::text AS calls,
-          SUM(amount_usdc)::text AS revenue
-        FROM usage_events
-        WHERE user_id = $1
-        GROUP BY api_id
-      `,
-      [developerId]
-    );
-
-    return result.rows.map(row => ({
-      apiId: row.api_id,
-      calls: parseInt(row.calls, 10),
-      revenue: toBigInt(row.revenue, 'revenue'),
-    }));
-  }
-
-  async aggregateByUser(query: UserUsageEventQuery): Promise<{
-    totalRevenue: bigint;
-    totalCalls: number;
-    breakdownByApi: UsageStats[];
-    buckets?: UsageBucket[];
-  }> {
-    assertValidRange(query.from, query.to);
-    const userId = assertNonEmpty(query.userId, 'userId');
-
-    const params: unknown[] = [userId];
-    const clauses = [`user_id = $1`];
-    appendDateFilters(params, clauses, query.from, query.to);
-
-    if (query.apiId) {
-      params.push(query.apiId);
-      clauses.push(`api_id = $${params.length}`);
+  async findUnindexedRevenueLedgerEvents(
+    cursor?: string,
+    limit = 100,
+  ): Promise<RevenueLedgerUsageEvent[]> {
+    const normalizedCursor = normalizeCursor(cursor) ?? '0';
+    const normalizedLimit = normalizeLimit(limit);
+    if (normalizedLimit === 0) {
+      return [];
     }
 
-    const whereClause = clauses.join(' AND ');
-
-    // 1. Get totals
-    const totalResult = await this.db.query<{ total: string | null; count: string }>(
+    const result = await this.db.query<RevenueLedgerUsageEventRow>(
       `
         SELECT
-          COALESCE(SUM(amount_usdc), 0)::text AS total,
-          COUNT(*)::text AS count
-        FROM usage_events
-        WHERE ${whereClause}
+          ue.id AS usage_event_id,
+          ue.api_id,
+          a.developer_id,
+          ue.amount_usdc,
+          ue.created_at
+        FROM usage_events ue
+        INNER JOIN apis a
+          ON a.id = ue.api_id
+        LEFT JOIN revenue_ledger rl
+          ON rl.usage_event_id = ue.id
+        WHERE ue.id > $1
+          AND rl.usage_event_id IS NULL
+        ORDER BY ue.id ASC
+        LIMIT $2
       `,
-      params,
+      [normalizedCursor, normalizedLimit],
     );
 
-    const totalRevenue = toBigInt(totalResult.rows[0]?.total ?? '0', 'total');
-    const totalCalls = parseInt(totalResult.rows[0]?.count ?? '0', 10);
+    return result.rows.map(mapRevenueLedgerUsageEventRow);
+  }
 
-    // 2. Get breakdown by API
-    const breakdownResult = await this.db.query<{ api_id: string; calls: string; revenue: string }>(
+  async indexRevenueLedgerEvent(event: RevenueLedgerUsageEvent): Promise<boolean> {
+    const result = await this.db.query<{ inserted: number }>(
       `
-        SELECT
+        INSERT INTO revenue_ledger (
           api_id,
-          COUNT(*)::text AS calls,
-          SUM(amount_usdc)::text AS revenue
-        FROM usage_events
-        WHERE ${whereClause}
-        GROUP BY api_id
+          developer_id,
+          amount_usdc,
+          usage_event_id,
+          created_at
+        )
+        SELECT $1, $2, $3::numeric, $4::bigint, $5::timestamp
+        WHERE NOT EXISTS (
+          SELECT 1
+          FROM revenue_ledger
+          WHERE usage_event_id = $4::bigint
+        )
+        ON CONFLICT (usage_event_id) DO NOTHING
+        RETURNING 1 AS inserted
       `,
-      params,
+      [
+        assertNonEmpty(event.apiId, 'apiId'),
+        assertNonEmpty(event.developerId, 'developerId'),
+        assertAmount(event.amount).toString(),
+        normalizeCursor(event.usageEventId) ?? '0',
+        event.createdAt,
+      ],
     );
 
-    const breakdownByApi = breakdownResult.rows.map(row => ({
-      apiId: row.api_id,
-      calls: parseInt(row.calls, 10),
-      revenue: toBigInt(row.revenue, 'revenue'),
-    }));
-
-    // 3. Optional bucketing
-    let buckets: UsageBucket[] | undefined;
-    if (query.groupBy) {
-      const bucketResult = await this.db.query<{ period: string | Date; calls: string; revenue: string }>(
-        `
-          SELECT
-            date_trunc($${params.length + 1}, created_at) AS period,
-            COUNT(*)::text AS calls,
-            SUM(amount_usdc)::text AS revenue
-          FROM usage_events
-          WHERE ${whereClause}
-          GROUP BY period
-          ORDER BY period ASC
-        `,
-        [...params, query.groupBy],
-      );
-
-      buckets = bucketResult.rows.map(row => ({
-        period: new Date(row.period).toISOString().slice(0, 10),
-        calls: parseInt(row.calls, 10),
-        revenue: toBigInt(row.revenue, 'revenue'),
-      }));
-    }
-
-    return {
-      totalRevenue,
-      totalCalls,
-      breakdownByApi,
-      buckets,
-    };
+    return Boolean(result.rows[0]);
   }
 
   private async findByColumn(

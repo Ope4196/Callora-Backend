@@ -143,3 +143,23 @@ describe('env schema — REST rate limit config', () => {
     expect(result.success).toBe(false);
   });
 });
+
+describe('env schema — revenue ledger indexer config', () => {
+  it('defaults revenue ledger indexer values when omitted', () => {
+    const result = envSchema.safeParse({ ...baseEnv });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.REVENUE_LEDGER_INDEXER_INTERVAL_MS).toBe(30_000);
+      expect(result.data.REVENUE_LEDGER_INDEXER_BATCH_SIZE).toBe(500);
+    }
+  });
+
+  it('rejects non-positive revenue ledger indexer values', () => {
+    const result = envSchema.safeParse({
+      ...baseEnv,
+      REVENUE_LEDGER_INDEXER_INTERVAL_MS: '0',
+      REVENUE_LEDGER_INDEXER_BATCH_SIZE: '-10',
+    });
+    expect(result.success).toBe(false);
+  });
+});

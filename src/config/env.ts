@@ -61,6 +61,8 @@ export const envSchema = z
     HORIZON_TIMEOUT: z.coerce.number().default(2_000),
     SETTLEMENT_STATUS_SYNC_INTERVAL_MS: z.coerce.number().int().positive().default(60_000),
     SETTLEMENT_STATUS_SYNC_TIMEOUT_MS: z.coerce.number().int().positive().default(5_000),
+    REVENUE_LEDGER_INDEXER_INTERVAL_MS: z.coerce.number().int().positive().default(30_000),
+    REVENUE_LEDGER_INDEXER_BATCH_SIZE: z.coerce.number().int().positive().default(500),
 
     // Stellar network configuration
     STELLAR_NETWORK: stellarNetworkSchema.optional(),

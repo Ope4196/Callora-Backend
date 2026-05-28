@@ -178,12 +178,18 @@ export class PostgresUsageStore implements UsageStore {
             usage_event_id,
             created_at
           )
-          VALUES ($1, $2, $3, $4, $5)
+          SELECT
+            $1,
+            a.developer_id,
+            $2::numeric,
+            $3::bigint,
+            $4::timestamp
+          FROM apis a
+          WHERE a.id = $1
           ON CONFLICT (usage_event_id) DO NOTHING
         `,
         [
           event.apiId,
-          event.userId,
           event.amountUsdc,
           inserted.id,
           event.timestamp,

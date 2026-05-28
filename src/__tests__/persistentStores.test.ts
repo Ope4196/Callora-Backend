@@ -3,6 +3,7 @@ import request from 'supertest';
 import { DataType, newDb } from 'pg-mem';
 import { createDeveloperRouter } from '../routes/developerRoutes.js';
 import { errorHandler } from '../middleware/errorHandler.js';
+import type { DeveloperRepository } from '../repositories/developerRepository.js';
 import { createPostgresSettlementStore } from '../services/settlementStore.js';
 import { createPostgresUsageStore } from '../services/usageStore.js';
 
@@ -28,6 +29,11 @@ function createPersistentStoreHarness() {
       status_code INTEGER NOT NULL DEFAULT 200,
       stellar_tx_hash VARCHAR(64),
       created_at TIMESTAMP NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE apis (
+      id VARCHAR(255) PRIMARY KEY,
+      developer_id VARCHAR(255) NOT NULL
     );
 
     CREATE TABLE settlements (
@@ -102,6 +108,11 @@ test('PostgresUsageStore records idempotently and marks events as settled', asyn
   const { pool, settlementStore, usageStore } = createPersistentStoreHarness();
 
   try {
+    await pool.query(
+      'INSERT INTO apis (id, developer_id) VALUES ($1, $2)',
+      ['api-1', 'api-owner-1'],
+    );
+
     const firstInsert = await usageStore.record({
       id: 'ignored-in-pg-store',
       requestId: 'req-1',
@@ -137,6 +148,7 @@ test('PostgresUsageStore records idempotently and marks events as settled', asyn
       amountUsdc: 4.25,
       statusCode: 200,
       apiKey: 'key-1',
+      userId: 'api-owner-1',
       settlementId: undefined,
     });
 
@@ -165,6 +177,11 @@ test('persistent stores survive new instances and keep developer revenue availab
   const harness = createPersistentStoreHarness();
 
   try {
+    await harness.pool.query(
+      'INSERT INTO apis (id, developer_id) VALUES ($1, $2)',
+      ['api-restart', 'dev_restart'],
+    );
+
     await harness.settlementStore.create({
       id: 'stl_completed',
       developerId: 'dev_restart',
@@ -196,9 +213,19 @@ test('persistent stores survive new instances and keep developer revenue availab
 
     const app = express();
     app.use(express.json());
+    const developerRepository: DeveloperRepository = {
+      findByUserId: async () => undefined,
+      getOrCreateByUserId: async () => {
+        throw new Error('not used in this test');
+      },
+      upsertProfile: async () => {
+        throw new Error('not used in this test');
+      },
+    };
     app.use('/api/developers', createDeveloperRouter({
       settlementStore: createPostgresSettlementStore(harness.pool),
       usageStore: createPostgresUsageStore(harness.pool),
+      developerRepository,
     }));
     app.use(errorHandler);
 

@@ -79,6 +79,7 @@ The request requires developer auth via `Authorization: Bearer ...` or `x-user-i
 
 - The runtime now uses PostgreSQL-backed `SettlementStore` and `UsageStore` implementations so `/api/developers/revenue` survives process restarts.
 - Unsettled usage is persisted through `revenue_ledger`, and settlement batches are persisted through `settlements`.
+- A background revenue ledger indexer backfills `revenue_ledger` from `usage_events`, keyed by `usage_event_id` and resolving API ownership from `apis`.
 - The in-memory store factories are still available for unit tests and isolated local scenarios.
 - Apply `migrations/001_create_usage_events.sql`, `migrations/002_create_settlements.sql`, `migrations/003_create_revenue_ledger.sql`, and `migrations/005_add_persistent_store_columns.sql` before starting the API against PostgreSQL.
 
