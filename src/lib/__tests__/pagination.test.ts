@@ -1,34 +1,24 @@
 import assert from 'node:assert/strict';
-import { describe, it } from 'node:test';
-import { parsePagination, paginatedResponse } from '../pagination.js';
+import { parsePagination, paginatedResponse } from '../pagination';
+import { ValidationError } from '../../middleware/validate';
+
+function assertValidationError(fn: () => unknown, field: string) {
+  assert.throws(fn, (err) => {
+    assert.ok(err instanceof ValidationError, `expected ValidationError, got ${err}`);
+    assert.ok(
+      err.details.some((d) => d.field === field),
+      `expected field "${field}" in details: ${JSON.stringify(err.details)}`,
+    );
+    return true;
+  });
+}
 
 describe('parsePagination', () => {
+  // --- Defaults ---
+
   it('returns defaults when no query params given', () => {
     assert.deepEqual(parsePagination({}), { limit: 20, offset: 0 });
   });
-
-  it('parses valid limit and offset', () => {
-    assert.deepEqual(parsePagination({ limit: '10', offset: '30' }), { limit: 10, offset: 30 });
-  });
-
-  it('clamps limit to max 100', () => {
-    assert.deepEqual(parsePagination({ limit: '500' }), { limit: 100, offset: 0 });
-  });
-
-  it('clamps limit to min 1', () => {
-    assert.deepEqual(parsePagination({ limit: '0' }), { limit: 1, offset: 0 });
-    assert.deepEqual(parsePagination({ limit: '-5' }), { limit: 1, offset: 0 });
-  });
-
-  it('clamps offset to min 0', () => {
-    assert.deepEqual(parsePagination({ offset: '-10' }), { limit: 20, offset: 0 });
-  });
-
-  it('handles non-numeric strings gracefully', () => {
-    assert.deepEqual(parsePagination({ limit: 'abc', offset: 'xyz' }), { limit: 20, offset: 0 });
-  });
-
-  // --- Edge cases: undefined / empty ---
 
   it('returns defaults when values are explicitly undefined', () => {
     assert.deepEqual(parsePagination({ limit: undefined, offset: undefined }), { limit: 20, offset: 0 });
@@ -42,27 +32,11 @@ describe('parsePagination', () => {
     assert.deepEqual(parsePagination({ limit: '  ', offset: '  ' }), { limit: 20, offset: 0 });
   });
 
-  // --- Edge cases: floating-point values ---
+  // --- Valid values ---
 
-  it('truncates floating-point limit via parseInt', () => {
-    assert.deepEqual(parsePagination({ limit: '10.7' }), { limit: 10, offset: 0 });
+  it('parses valid limit and offset', () => {
+    assert.deepEqual(parsePagination({ limit: '10', offset: '30' }), { limit: 10, offset: 30 });
   });
-
-  it('truncates floating-point offset via parseInt', () => {
-    assert.deepEqual(parsePagination({ offset: '5.9' }), { limit: 20, offset: 5 });
-  });
-
-  // --- Edge cases: huge values (prevent unbounded queries) ---
-
-  it('clamps a huge limit (Number.MAX_SAFE_INTEGER) to 100', () => {
-    assert.deepEqual(parsePagination({ limit: '9007199254740991' }), { limit: 100, offset: 0 });
-  });
-
-  it('allows a large offset value', () => {
-    assert.deepEqual(parsePagination({ offset: '999999999' }), { limit: 20, offset: 999999999 });
-  });
-
-  // --- Edge cases: exact boundaries ---
 
   it('accepts limit at lower boundary (1)', () => {
     assert.deepEqual(parsePagination({ limit: '1' }), { limit: 1, offset: 0 });
@@ -72,29 +46,67 @@ describe('parsePagination', () => {
     assert.deepEqual(parsePagination({ limit: '100' }), { limit: 100, offset: 0 });
   });
 
-  it('clamps limit just above upper boundary (101)', () => {
-    assert.deepEqual(parsePagination({ limit: '101' }), { limit: 100, offset: 0 });
+  it('clamps limit above max to 100', () => {
+    assert.deepEqual(parsePagination({ limit: '500' }), { limit: 100, offset: 0 });
+  });
+
+  it('clamps a huge limit (Number.MAX_SAFE_INTEGER) to 100', () => {
+    assert.deepEqual(parsePagination({ limit: '9007199254740991' }), { limit: 100, offset: 0 });
   });
 
   it('accepts offset at lower boundary (0)', () => {
     assert.deepEqual(parsePagination({ offset: '0' }), { limit: 20, offset: 0 });
   });
 
-  // --- Edge cases: special strings ---
-
-  it('falls back to defaults for "Infinity"', () => {
-    assert.deepEqual(parsePagination({ limit: 'Infinity' }), { limit: 20, offset: 0 });
-  });
-
-  it('falls back to defaults for "NaN"', () => {
-    assert.deepEqual(parsePagination({ limit: 'NaN' }), { limit: 20, offset: 0 });
+  it('allows a large offset value', () => {
+    assert.deepEqual(parsePagination({ offset: '999999999' }), { limit: 20, offset: 999999999 });
   });
 
   it('handles leading/trailing whitespace in numeric strings', () => {
     assert.deepEqual(parsePagination({ limit: ' 50 ', offset: ' 10 ' }), { limit: 50, offset: 10 });
   });
 
-  // --- Page parameter tests ---
+  // --- Strict rejection: non-integer strings ---
+
+  it('rejects non-numeric limit with 400', () => {
+    assertValidationError(() => parsePagination({ limit: 'abc' }), 'query.limit');
+  });
+
+  it('rejects non-numeric offset with 400', () => {
+    assertValidationError(() => parsePagination({ offset: 'xyz' }), 'query.offset');
+  });
+
+  it('rejects floating-point limit', () => {
+    assertValidationError(() => parsePagination({ limit: '10.7' }), 'query.limit');
+  });
+
+  it('rejects floating-point offset', () => {
+    assertValidationError(() => parsePagination({ offset: '5.9' }), 'query.offset');
+  });
+
+  it('rejects "Infinity" for limit', () => {
+    assertValidationError(() => parsePagination({ limit: 'Infinity' }), 'query.limit');
+  });
+
+  it('rejects "NaN" for limit', () => {
+    assertValidationError(() => parsePagination({ limit: 'NaN' }), 'query.limit');
+  });
+
+  // --- Strict rejection: out-of-range ---
+
+  it('rejects limit=0 (below min 1)', () => {
+    assertValidationError(() => parsePagination({ limit: '0' }), 'query.limit');
+  });
+
+  it('rejects negative limit', () => {
+    assertValidationError(() => parsePagination({ limit: '-5' }), 'query.limit');
+  });
+
+  it('rejects negative offset', () => {
+    assertValidationError(() => parsePagination({ offset: '-10' }), 'query.offset');
+  });
+
+  // --- Page parameter: valid ---
 
   it('calculates offset based on page and limit', () => {
     assert.deepEqual(parsePagination({ limit: '10', page: '1' }), { limit: 10, offset: 0 });
@@ -111,14 +123,22 @@ describe('parsePagination', () => {
     assert.deepEqual(parsePagination({ limit: '10', page: '2', offset: '50' }), { limit: 10, offset: 10 });
   });
 
-  it('handles invalid page values gracefully', () => {
-    assert.deepEqual(parsePagination({ page: 'abc' }), { limit: 20, offset: 0 });
-    assert.deepEqual(parsePagination({ page: '0' }), { limit: 20, offset: 0 });
-    assert.deepEqual(parsePagination({ page: '-5' }), { limit: 20, offset: 0 });
+  // --- Page parameter: strict rejection ---
+
+  it('rejects non-numeric page', () => {
+    assertValidationError(() => parsePagination({ page: 'abc' }), 'query.page');
   });
 
-  it('handles floating-point page values', () => {
-    assert.deepEqual(parsePagination({ page: '2.9' }), { limit: 20, offset: 20 });
+  it('rejects page=0 (below min 1)', () => {
+    assertValidationError(() => parsePagination({ page: '0' }), 'query.page');
+  });
+
+  it('rejects negative page', () => {
+    assertValidationError(() => parsePagination({ page: '-5' }), 'query.page');
+  });
+
+  it('rejects floating-point page', () => {
+    assertValidationError(() => parsePagination({ page: '2.9' }), 'query.page');
   });
 });
 

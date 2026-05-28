@@ -3,7 +3,7 @@ import { adminAuth } from '../middleware/adminAuth.js';
 import { createAdminIpAllowlist } from '../middleware/ipAllowlist.js';
 import { findUsers } from '../repositories/userRepository.js';
 import { parsePagination, paginatedResponse } from '../lib/pagination.js';
-import { AppError } from '../errors/index.js';
+import { AppError, InternalServerError } from '../errors/index.js';
 import { logger } from '../logger.js';
 
 const router = Router();
@@ -21,8 +21,12 @@ router.get('/users', async (req, res, next) => {
 
     res.json(paginatedResponse(users, { total, limit, offset }));
   } catch (error) {
+    if (error instanceof AppError) {
+      next(error);
+      return;
+    }
     logger.error('Failed to list users:', error);
-    next(new AppError('Internal server error', 500));
+    next(new InternalServerError());
   }
 });
 
