@@ -285,8 +285,48 @@ export function resetHttpMetrics(): void {
   httpRequestsTotal.reset();
 }
 
+// ── Listings cache hit/miss counters ─────────────────────────────────────────
+//
+// Metric: apis_listing_cache_hits_total
+//   Type:    Counter
+//   Labels:  (none — single series, low cardinality)
+//   Purpose: Count how many GET /api/apis responses were served from cache.
+//
+// Metric: apis_listing_cache_misses_total
+//   Type:    Counter
+//   Labels:  (none)
+//   Purpose: Count how many GET /api/apis responses required a DB read.
+//
+// Both counters are reset together with the other HTTP metrics in tests.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const apisListingCacheHits = new client.Counter({
+  name: 'apis_listing_cache_hits_total',
+  help: 'Total number of GET /api/apis responses served from the in-process cache',
+});
+
+const apisListingCacheMisses = new client.Counter({
+  name: 'apis_listing_cache_misses_total',
+  help: 'Total number of GET /api/apis responses that required a database read (cache miss)',
+});
+
+register.registerMetric(apisListingCacheHits);
+register.registerMetric(apisListingCacheMisses);
+
+/** Increment the cache-hit counter. Called by the APIs listing route. */
+export function recordCacheHit(): void {
+  apisListingCacheHits.inc();
+}
+
+/** Increment the cache-miss counter. Called by the APIs listing route. */
+export function recordCacheMiss(): void {
+  apisListingCacheMisses.inc();
+}
+
 /** Exposed for testing — reset all metrics including upstream and HTTP. */
 export function resetAllMetrics(): void {
   resetUpstreamMetrics();
   resetHttpMetrics();
+  apisListingCacheHits.reset();
+  apisListingCacheMisses.reset();
 }

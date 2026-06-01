@@ -1,6 +1,7 @@
 import { eq, and, like, type SQL, count } from 'drizzle-orm';
 import { db, schema } from '../db/index.js';
 import type { Api, ApiEndpoint, NewApi, NewApiEndpoint, ApiStatus, HttpMethod } from '../db/schema.js';
+import { listingsCache } from '../lib/listingsCache.js';
 
 export interface ApiListFilters {
   status?: ApiStatus;
@@ -88,11 +89,18 @@ export const defaultApiRepository: ApiRepository = {
       .returning();
 
     if (!created) throw new Error('API insert failed');
+
+    // A new API may appear in any listing filter combination — flush the cache.
+    listingsCache.invalidateAll();
+
     return created;
   },
 
   async createWithEndpoints(input) {
-    return createApi(input);
+    const result = await createApi(input);
+    // Invalidate after the transactional insert so stale listings are not served.
+    listingsCache.invalidateAll();
+    return result;
   },
 
   async update(id, data) {
@@ -116,6 +124,9 @@ export const defaultApiRepository: ApiRepository = {
       .set(payload)
       .where(eq(schema.apis.id, id))
       .returning();
+
+    // An updated API (e.g. status change, name change) may affect any listing.
+    listingsCache.invalidateAll();
 
     return updated ?? null;
   },

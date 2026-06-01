@@ -1,6 +1,8 @@
 import { Router, type Response } from 'express';
 import { BadRequestError, NotFoundError, UnauthorizedError } from '../errors/index.js';
 import { parsePagination, paginatedResponse } from '../lib/pagination.js';
+import { buildCacheKey, listingsCache, type ListingsCache } from '../lib/listingsCache.js';
+import { recordCacheHit, recordCacheMiss } from '../metrics.js';
 import { requireAuth, type AuthenticatedLocals } from '../middleware/requireAuth.js';
 import { bodyValidator } from '../middleware/validate.js';
 import {
@@ -16,24 +18,43 @@ import { apiRegistrationSchema } from '../validators/apiRegistration.js';
 export interface ApisRouterDeps {
   apiRepository?: ApiRepository;
   developerRepository?: DeveloperRepository;
+  /** Inject a custom cache instance (useful in tests). Defaults to the shared singleton. */
+  cache?: ListingsCache;
 }
 
 export function createApisRouter(deps: ApisRouterDeps = {}): Router {
   const router = Router();
   const apiRepository = deps.apiRepository ?? defaultApiRepository;
   const developerRepository = deps.developerRepository ?? defaultDeveloperRepository;
+  const cache = deps.cache ?? listingsCache;
 
   router.get('/', async (req, res, next) => {
     try {
       const { limit, offset } = parsePagination(req.query as Record<string, string>);
-      const apis = await apiRepository.listPublic({
-        limit,
-        offset,
-        category: typeof req.query.category === 'string' ? req.query.category : undefined,
-        search: typeof req.query.search === 'string' ? req.query.search : undefined,
-      });
+      const category = typeof req.query.category === 'string' ? req.query.category : undefined;
+      const search = typeof req.query.search === 'string' ? req.query.search : undefined;
 
-      res.json(paginatedResponse(apis, { limit, offset }));
+      // ── Cache lookup ──────────────────────────────────────────────────────
+      const cacheKey = buildCacheKey({ limit, offset, category, search });
+      const cached = cache.get(cacheKey);
+
+      if (cached !== undefined) {
+        // Serve from cache and record a hit metric.
+        recordCacheHit();
+        res.json(cached);
+        return;
+      }
+
+      // ── Cache miss: read from DB, populate cache ──────────────────────────
+      recordCacheMiss();
+      const apis = await apiRepository.listPublic({ limit, offset, category, search });
+      const response = paginatedResponse(apis, { limit, offset });
+
+      // Store the serialisable response object so subsequent requests within
+      // the TTL window skip the DB entirely.
+      cache.set(cacheKey, response);
+
+      res.json(response);
     } catch (error) {
       next(error);
     }
