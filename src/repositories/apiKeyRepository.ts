@@ -2,6 +2,21 @@ import { randomBytes, timingSafeEqual } from "crypto";
 import bcrypt from "bcryptjs";
 import { config } from "../config/index.js";
 
+/**
+ * Typed error returned when an API key prefix is found in the store but the
+ * full-key hash comparison fails. Callers should map this to a 401 response
+ * so the distinction between "prefix not found" and "hash mismatch" is never
+ * observable externally (no timing oracle — both paths yield the same status).
+ */
+export class InvalidKeyError extends Error {
+  public readonly code = 'INVALID_KEY' as const;
+  constructor(message = 'Invalid API key') {
+    super(message);
+    this.name = 'InvalidKeyError';
+    Object.setPrototypeOf(this, InvalidKeyError.prototype);
+  }
+}
+
 export interface ApiKeyRecord {
   id: string;
   apiId: string;
@@ -100,24 +115,46 @@ export const apiKeyRepository = {
       constantTimeCompare(k.prefix, prefix),
     );
 
+    // No records share this prefix — key does not exist at all.
+    if (candidates.length === 0) return null;
+
     for (const candidate of candidates) {
-      if (!candidate.revoked && verifyHash(key, candidate.keyHash)) {
-        // Return a copy without sensitive data
+      if (verifyHash(key, candidate.keyHash)) {
+        if (candidate.revoked) {
+          // Prefix + hash matched a revoked key — let the caller handle 403.
+          return {
+            id: candidate.id,
+            apiId: candidate.apiId,
+            userId: candidate.userId,
+            prefix: candidate.prefix,
+            keyHash: '[REDACTED]',
+            scopes: candidate.scopes,
+            rateLimitPerMinute: candidate.rateLimitPerMinute,
+            createdAt: candidate.createdAt,
+            revoked: candidate.revoked,
+          };
+        }
+        // Return a copy without the raw hash so callers never see the secret.
         return {
           id: candidate.id,
           apiId: candidate.apiId,
           userId: candidate.userId,
           prefix: candidate.prefix,
-          keyHash: "[REDACTED]",
+          keyHash: '[REDACTED]',
           scopes: candidate.scopes,
           rateLimitPerMinute: candidate.rateLimitPerMinute,
           createdAt: candidate.createdAt,
-          revoked: candidate.revoked
+          revoked: candidate.revoked,
         };
       }
     }
 
-    return null;
+    // Prefix was found in the store but no candidate's hash matched the supplied
+    // key. Throw a typed error so callers can distinguish this from "key not
+    // found" while still mapping both outcomes to the same 401 response — this
+    // avoids leaking whether a prefix exists (timing oracle) while keeping
+    // error-handling explicit.
+    throw new InvalidKeyError();
   },
   rotate(id: string, userId: string): { success: true; newKey: string; prefix: string } | { success: false; error: 'not_found' | 'forbidden' | 'revoked' } {
     const index = apiKeys.findIndex(k => k.id === id);

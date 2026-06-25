@@ -1,9 +1,9 @@
-import { randomUUID } from 'node:crypto';
+import { randomUUID, timingSafeEqual, createHash } from 'node:crypto';
 import express, { Router, type Request, type Response, type NextFunction } from 'express';
 import { z } from 'zod';
 import { startUpstreamTimer, getUpstreamHealth, type UpstreamOutcome } from '../metrics.js';
 import { validate } from '../middleware/validate.js';
-import type { GatewayDeps } from '../types/gateway.js';
+import type { GatewayDeps, ApiKey } from '../types/gateway.js';
 import { buildHopByHopSet } from '../lib/hopByHop.js';
 import { getDefaultBreakerRegistry, CircuitBreakerState } from '../lib/circuitBreaker.js';
 import {
@@ -15,6 +15,68 @@ import {
   TooManyRequestsError,
   UnauthorizedError,
 } from '../errors/index.js';
+
+/** Length of the key prefix used for candidate pre-filtering (matches repository). */
+const API_KEY_PREFIX_LENGTH = 16;
+
+/**
+ * Derive the SHA-256 hex digest of an API key value.
+ * This matches the hash strategy used by createMapBackedGatewayApiKeyAuthMiddleware.
+ */
+function sha256Hex(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
+}
+
+/**
+ * Constant-time string equality check.
+ * Buffers are always the same length (padded to the longer) so the comparison
+ * time is not a function of where the strings diverge — no timing oracle.
+ */
+function timingSafeStringEqual(a: string, b: string): boolean {
+  const bufA = Buffer.from(a);
+  const bufB = Buffer.from(b);
+  if (bufA.length !== bufB.length) return false;
+  return timingSafeEqual(bufA, bufB);
+}
+
+/**
+ * Resolve an API key string to its registered record using prefix-based
+ * candidate filtering followed by constant-time hash comparison.
+ *
+ * Returns:
+ *  - `{ record }` on a valid match
+ *  - `{ error: 'not_found' }` when no candidate shares the prefix
+ *  - `{ error: 'hash_mismatch' }` when a prefix was found but the hash did not
+ *    match — callers MUST map both error variants to the same 401 response so
+ *    the difference is never observable externally.
+ *
+ * The explicit `hash_mismatch` discriminant exists purely for internal
+ * observability (logging, metrics) without leaking any information to clients.
+ */
+function resolveApiKey(
+  apiKeyHeader: string,
+  apiKeys: Map<string, ApiKey>,
+): { record: ApiKey } | { error: 'not_found' | 'hash_mismatch' } {
+  const prefix = apiKeyHeader.slice(0, API_KEY_PREFIX_LENGTH);
+  const inboundHash = sha256Hex(apiKeyHeader);
+
+  let prefixFound = false;
+
+  for (const [rawKey, record] of apiKeys) {
+    if (!timingSafeStringEqual(rawKey.slice(0, API_KEY_PREFIX_LENGTH), prefix)) {
+      continue;
+    }
+    // At least one candidate shares the prefix.
+    prefixFound = true;
+
+    const storedHash = sha256Hex(rawKey);
+    if (timingSafeStringEqual(inboundHash, storedHash)) {
+      return { record };
+    }
+  }
+
+  return { error: prefixFound ? 'hash_mismatch' : 'not_found' };
+}
 
 const CREDIT_COST_PER_CALL = 1;
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -141,8 +203,19 @@ export function createGatewayRouter(deps: GatewayDeps): Router {
           return;
         }
 
-        const keyRecord = apiKeys.get(apiKeyHeader);
-        if (!keyRecord || keyRecord.apiId !== req.params.apiId) {
+        // Use prefix-based candidate lookup + constant-time hash comparison so
+        // that a prefix match with a wrong hash produces a clean 401 instead of
+        // propagating an unhandled exception as a 500. Both 'not_found' and
+        // 'hash_mismatch' intentionally map to the same generic 401 message so
+        // clients cannot distinguish the two cases (no timing oracle).
+        const resolved = resolveApiKey(apiKeyHeader, apiKeys);
+        if ('error' in resolved) {
+          next(new UnauthorizedError('Unauthorized: invalid API key'));
+          return;
+        }
+
+        const keyRecord = resolved.record;
+        if (keyRecord.apiId !== req.params.apiId) {
           next(new UnauthorizedError('Unauthorized: invalid API key'));
           return;
         }

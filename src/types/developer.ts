@@ -58,4 +58,5 @@ export interface SettlementStore {
   updateStatus(id: string, status: Settlement['status'], txHash?: string | null): Awaitable<void>;
   getDeveloperSettlements(developerId: string): Awaitable<Settlement[]>;
   getPendingSettlements(): Awaitable<Settlement[]>;
+  listPending?(): Awaitable<Settlement[]>;
 }
