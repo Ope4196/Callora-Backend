@@ -113,8 +113,15 @@ const gatewayUpstreamRequestsTotal = new client.Counter({
   labelNames: [...UPSTREAM_LABEL_NAMES],
 });
 
+const gatewayUpstreamBreakerState = new client.Gauge({
+  name: 'gateway_upstream_breaker_state',
+  help: 'State of the upstream circuit breaker (0=CLOSED, 1=OPEN, 2=HALF_OPEN)',
+  labelNames: ['api_id'],
+});
+
 register.registerMetric(gatewayUpstreamDuration);
 register.registerMetric(gatewayUpstreamRequestsTotal);
+register.registerMetric(gatewayUpstreamBreakerState);
 
 /** Check whether gateway profiling hooks are active. */
 export function isProfilingEnabled(): boolean {
@@ -466,10 +473,16 @@ export function recordProxyPrematureAbort(): void {
 }
 
 /** Exposed for testing — reset all metrics including upstream and HTTP. */
+export function setGatewayUpstreamBreakerState(apiId: string, state: number): void {
+  gatewayUpstreamBreakerState.set({ api_id: apiId }, state);
+}
+
+/** Exposed for testing - reset all metrics including upstream and HTTP. */
 export function resetAllMetrics(): void {
   resetUpstreamMetrics();
   resetHttpMetrics();
   apisListingCacheHits.reset();
   apisListingCacheMisses.reset();
   proxyPrematureAbortsTotal.reset();
+  gatewayUpstreamBreakerState.reset();
 }

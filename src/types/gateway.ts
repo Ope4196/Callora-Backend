@@ -132,6 +132,8 @@ export interface GatewayDeps {
   breakerRegistry?: import('../lib/circuitBreaker.js').BreakerRegistry;
 }
 
+import type { CircuitBreakerStore } from '../lib/circuitBreaker.js';
+
 /** Dependencies injected into the proxy router factory. */
 export interface ProxyDeps {
   billing: BillingService;
@@ -141,4 +143,5 @@ export interface ProxyDeps {
   apiKeys?: Map<string, ApiKey>;
   authMiddleware?: RequestHandler;
   proxyConfig?: Partial<ProxyConfig>;
+  circuitBreakerStore?: CircuitBreakerStore;
 }
