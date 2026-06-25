@@ -2,7 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { randomUUID } from 'node:crypto';
 import { ProxyDeps, ProxyConfig, ApiRegistryEntry, EndpointPricing } from '../types/gateway.js';
 import { resolveEndpointPrice } from '../data/apiRegistry.js';
-import { startUpstreamTimer, type UpstreamOutcome } from '../metrics.js';
+import { startUpstreamTimer, type UpstreamOutcome, setGatewayUpstreamBreakerState } from '../metrics.js';
 import { createMapBackedGatewayApiKeyAuthMiddleware } from '../middleware/gatewayApiKeyAuth.js';
 import { buildHopByHopSet } from '../lib/hopByHop.js';
 import {
@@ -12,11 +12,14 @@ import {
 } from '../lib/upstreamTarget.js';
 import {
   BadGatewayError,
+  CircuitBreakerOpenError,
   GatewayTimeoutError,
   InternalServerError,
   PaymentRequiredError,
   TooManyRequestsError,
 } from '../errors/index.js';
+import { CircuitBreaker, type CircuitBreakerStore } from '../lib/circuitBreaker.js';
+import { env } from '../config/env.js';
 
 /**
  * Headers that must never be forwarded to the upstream server.
@@ -73,9 +76,14 @@ function resolveConfig(partial?: Partial<ProxyConfig>): ProxyConfig {
  *   8. [Non-blocking] Record usage and deduct billing if status is recordable
  */
 export function createProxyRouter(deps: ProxyDeps): Router {
-  const { billing, rateLimiter, usageStore, registry } = deps;
+  const { billing, rateLimiter, usageStore, registry, circuitBreakerStore } = deps;
   const config = resolveConfig(deps.proxyConfig);
   const router = Router();
+  const circuitBreaker = new CircuitBreaker({
+    failureThreshold: env.PROXY_BREAKER_FAILURE_THRESHOLD,
+    cooldownMs: env.PROXY_BREAKER_COOLDOWN_MS,
+    successThreshold: env.PROXY_BREAKER_SUCCESS_THRESHOLD,
+  }, circuitBreakerStore);
   const authMiddleware = deps.authMiddleware ?? createMapBackedGatewayApiKeyAuthMiddleware({
     apiKeys: deps.apiKeys,
     resolveApiContext(req) {
@@ -115,6 +123,13 @@ export function createProxyRouter(deps: ProxyDeps): Router {
         );
         return;
       }
+
+      const breakerKey = String(apiEntry.id);
+
+      // Update circuit breaker state metric
+      const currentMetrics = await circuitBreaker.getMetrics(breakerKey);
+      const stateValue = currentMetrics.state === 'CLOSED' ? 0 : currentMetrics.state === 'OPEN' ? 1 : 2;
+      setGatewayUpstreamBreakerState(breakerKey, stateValue);
 
       // 3. Rate-limit check
       const rateResult = await rateLimiter.check(apiKeyHeader);
@@ -167,20 +182,28 @@ export function createProxyRouter(deps: ProxyDeps): Router {
       }
       forwardHeaders['x-request-id'] = requestId;
 
-      // 7. Proxy with timeout
+      // 7. Proxy with circuit breaker and timeout
       let upstreamStatus = 502;
       const timer = startUpstreamTimer(apiEntry.id, req.method);
 
       try {
-        const upstreamRes = await fetch(safeUpstreamTarget, {
-          method: req.method,
-          headers: forwardHeaders,
-          body: ['GET', 'HEAD'].includes(req.method) ? undefined : JSON.stringify(req.body),
-          signal: AbortSignal.timeout(config.timeoutMs),
+        const upstreamRes = await circuitBreaker.execute(breakerKey, async () => {
+          const res = await fetch(safeUpstreamTarget, {
+            method: req.method,
+            headers: forwardHeaders,
+            body: ['GET', 'HEAD'].includes(req.method) ? undefined : JSON.stringify(req.body),
+            signal: AbortSignal.timeout(config.timeoutMs),
+          });
+          return res;
         });
 
         upstreamStatus = upstreamRes.status;
         timer.stop(upstreamStatus, 'success');
+
+        // Update circuit breaker state metric after success
+        const updatedMetrics = await circuitBreaker.getMetrics(breakerKey);
+        const updatedStateValue = updatedMetrics.state === 'CLOSED' ? 0 : updatedMetrics.state === 'OPEN' ? 1 : 2;
+        setGatewayUpstreamBreakerState(breakerKey, updatedStateValue);
 
         // Forward response headers — strip hop-by-hop headers from the upstream
         // response, including any names listed in the upstream Connection header.
@@ -213,19 +236,39 @@ export function createProxyRouter(deps: ProxyDeps): Router {
       } catch (err: unknown) {
         let outcome: UpstreamOutcome = 'error';
 
-        if (err instanceof DOMException && err.name === 'TimeoutError') {
+        if (err instanceof CircuitBreakerOpenError) {
+          // Circuit breaker open — don't bill the caller
+          upstreamStatus = 502;
+          timer.stop(upstreamStatus, outcome);
+          // Update metric
+          const openMetrics = await circuitBreaker.getMetrics(breakerKey);
+          setGatewayUpstreamBreakerState(breakerKey, 1);
+          throw new BadGatewayError('Bad Gateway: upstream unavailable');
+        } else if (err instanceof DOMException && err.name === 'TimeoutError') {
           upstreamStatus = 504;
           outcome = 'timeout';
           timer.stop(upstreamStatus, outcome);
+          // Update metric after failure
+          const failedMetrics = await circuitBreaker.getMetrics(breakerKey);
+          const failedStateValue = failedMetrics.state === 'CLOSED' ? 0 : failedMetrics.state === 'OPEN' ? 1 : 2;
+          setGatewayUpstreamBreakerState(breakerKey, failedStateValue);
           throw new GatewayTimeoutError('Upstream service timed out');
         } else if (err instanceof TypeError && (err as NodeJS.ErrnoException).code === 'UND_ERR_CONNECT_TIMEOUT') {
           upstreamStatus = 504;
           outcome = 'timeout';
           timer.stop(upstreamStatus, outcome);
+          // Update metric after failure
+          const failedMetrics = await circuitBreaker.getMetrics(breakerKey);
+          const failedStateValue = failedMetrics.state === 'CLOSED' ? 0 : failedMetrics.state === 'OPEN' ? 1 : 2;
+          setGatewayUpstreamBreakerState(breakerKey, failedStateValue);
           throw new GatewayTimeoutError('Upstream service timed out');
         } else {
           upstreamStatus = 502;
           timer.stop(upstreamStatus, outcome);
+          // Update metric after failure
+          const failedMetrics = await circuitBreaker.getMetrics(breakerKey);
+          const failedStateValue = failedMetrics.state === 'CLOSED' ? 0 : failedMetrics.state === 'OPEN' ? 1 : 2;
+          setGatewayUpstreamBreakerState(breakerKey, failedStateValue);
           throw new BadGatewayError('Bad Gateway: upstream unreachable');
         }
       }

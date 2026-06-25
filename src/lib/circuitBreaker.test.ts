@@ -5,15 +5,17 @@
 import { CircuitBreaker, CircuitBreakerState } from './circuitBreaker.js';
 import { CircuitBreakerOpenError } from './errors.js';
 
+const TEST_BREAKER_KEY = 'test-breaker';
+
 describe('Circuit Breaker', () => {
   beforeEach(() => {
     jest.clearAllMocks();
   });
 
   describe('State transitions', () => {
-    it('should start in CLOSED state', () => {
+    it('should start in CLOSED state', async () => {
       const breaker = new CircuitBreaker();
-      expect(breaker.getState()).toBe(CircuitBreakerState.CLOSED);
+      expect(await breaker.getState(TEST_BREAKER_KEY)).toBe(CircuitBreakerState.CLOSED);
     });
 
     it('should transition to OPEN after threshold failures', async () => {
@@ -22,10 +24,10 @@ describe('Circuit Breaker', () => {
 
       // Execute failures up to threshold
       for (let i = 0; i < 3; i++) {
-        await expect(breaker.execute(operation)).rejects.toThrow('Failure');
+        await expect(breaker.execute(TEST_BREAKER_KEY, operation)).rejects.toThrow('Failure');
       }
 
-      expect(breaker.getState()).toBe(CircuitBreakerState.OPEN);
+      expect(await breaker.getState(TEST_BREAKER_KEY)).toBe(CircuitBreakerState.OPEN);
       expect(operation).toHaveBeenCalledTimes(3);
     });
 
@@ -34,13 +36,13 @@ describe('Circuit Breaker', () => {
       const operation = jest.fn().mockRejectedValue(new Error('Failure'));
 
       // Trip the breaker
-      await breaker.execute(operation).catch(() => {});
-      await breaker.execute(operation).catch(() => {});
+      await breaker.execute(TEST_BREAKER_KEY, operation).catch(() => {});
+      await breaker.execute(TEST_BREAKER_KEY, operation).catch(() => {});
 
-      expect(breaker.getState()).toBe(CircuitBreakerState.OPEN);
+      expect(await breaker.getState(TEST_BREAKER_KEY)).toBe(CircuitBreakerState.OPEN);
 
       // Should fast-fail without calling operation
-      await expect(breaker.execute(operation)).rejects.toThrow(CircuitBreakerOpenError);
+      await expect(breaker.execute(TEST_BREAKER_KEY, operation)).rejects.toThrow(CircuitBreakerOpenError);
       expect(operation).toHaveBeenCalledTimes(2); // Not called again
     });
 
@@ -51,19 +53,19 @@ describe('Circuit Breaker', () => {
       const operation = jest.fn().mockRejectedValue(new Error('Failure'));
 
       // Trip the breaker
-      await breaker.execute(operation).catch(() => {});
-      await breaker.execute(operation).catch(() => {});
+      await breaker.execute(TEST_BREAKER_KEY, operation).catch(() => {});
+      await breaker.execute(TEST_BREAKER_KEY, operation).catch(() => {});
 
-      expect(breaker.getState()).toBe(CircuitBreakerState.OPEN);
+      expect(await breaker.getState(TEST_BREAKER_KEY)).toBe(CircuitBreakerState.OPEN);
 
       // Advance time past cooldown
       jest.advanceTimersByTime(5000);
 
       // Next execution should transition to HALF_OPEN
       const successOp = jest.fn().mockResolvedValue('success');
-      await breaker.execute(successOp);
+      await breaker.execute(TEST_BREAKER_KEY, successOp);
 
-      expect(breaker.getState()).toBe(CircuitBreakerState.CLOSED);
+      expect(await breaker.getState(TEST_BREAKER_KEY)).toBe(CircuitBreakerState.CLOSED);
 
       jest.useRealTimers();
     });
@@ -75,19 +77,19 @@ describe('Circuit Breaker', () => {
       const failOp = jest.fn().mockRejectedValue(new Error('Failure'));
 
       // Trip the breaker
-      await breaker.execute(failOp).catch(() => {});
-      await breaker.execute(failOp).catch(() => {});
+      await breaker.execute(TEST_BREAKER_KEY, failOp).catch(() => {});
+      await breaker.execute(TEST_BREAKER_KEY, failOp).catch(() => {});
 
-      expect(breaker.getState()).toBe(CircuitBreakerState.OPEN);
+      expect(await breaker.getState(TEST_BREAKER_KEY)).toBe(CircuitBreakerState.OPEN);
 
       // Wait for cooldown
       jest.advanceTimersByTime(1000);
 
       // Successful probe should close the circuit
       const successOp = jest.fn().mockResolvedValue('success');
-      await breaker.execute(successOp);
+      await breaker.execute(TEST_BREAKER_KEY, successOp);
 
-      expect(breaker.getState()).toBe(CircuitBreakerState.CLOSED);
+      expect(await breaker.getState(TEST_BREAKER_KEY)).toBe(CircuitBreakerState.CLOSED);
 
       jest.useRealTimers();
     });
@@ -99,18 +101,18 @@ describe('Circuit Breaker', () => {
       const failOp = jest.fn().mockRejectedValue(new Error('Failure'));
 
       // Trip the breaker
-      await breaker.execute(failOp).catch(() => {});
-      await breaker.execute(failOp).catch(() => {});
+      await breaker.execute(TEST_BREAKER_KEY, failOp).catch(() => {});
+      await breaker.execute(TEST_BREAKER_KEY, failOp).catch(() => {});
 
-      expect(breaker.getState()).toBe(CircuitBreakerState.OPEN);
+      expect(await breaker.getState(TEST_BREAKER_KEY)).toBe(CircuitBreakerState.OPEN);
 
       // Wait for cooldown
       jest.advanceTimersByTime(1000);
 
       // Failed probe should return to OPEN
-      await breaker.execute(failOp).catch(() => {});
+      await breaker.execute(TEST_BREAKER_KEY, failOp).catch(() => {});
 
-      expect(breaker.getState()).toBe(CircuitBreakerState.OPEN);
+      expect(await breaker.getState(TEST_BREAKER_KEY)).toBe(CircuitBreakerState.OPEN);
 
       jest.useRealTimers();
     });
@@ -121,19 +123,19 @@ describe('Circuit Breaker', () => {
       const successOp = jest.fn().mockResolvedValue('success');
 
       // Two failures
-      await breaker.execute(failOp).catch(() => {});
-      await breaker.execute(failOp).catch(() => {});
+      await breaker.execute(TEST_BREAKER_KEY, failOp).catch(() => {});
+      await breaker.execute(TEST_BREAKER_KEY, failOp).catch(() => {});
 
-      expect(breaker.getState()).toBe(CircuitBreakerState.CLOSED);
+      expect(await breaker.getState(TEST_BREAKER_KEY)).toBe(CircuitBreakerState.CLOSED);
 
       // Success resets counter
-      await breaker.execute(successOp);
+      await breaker.execute(TEST_BREAKER_KEY, successOp);
 
       // Two more failures shouldn't trip (counter was reset)
-      await breaker.execute(failOp).catch(() => {});
-      await breaker.execute(failOp).catch(() => {});
+      await breaker.execute(TEST_BREAKER_KEY, failOp).catch(() => {});
+      await breaker.execute(TEST_BREAKER_KEY, failOp).catch(() => {});
 
-      expect(breaker.getState()).toBe(CircuitBreakerState.CLOSED);
+      expect(await breaker.getState(TEST_BREAKER_KEY)).toBe(CircuitBreakerState.CLOSED);
     });
   });
 
@@ -143,11 +145,11 @@ describe('Circuit Breaker', () => {
       const successOp = jest.fn().mockResolvedValue('success');
       const failOp = jest.fn().mockRejectedValue(new Error('Failure'));
 
-      await breaker.execute(successOp);
-      await breaker.execute(successOp);
-      await breaker.execute(failOp).catch(() => {});
+      await breaker.execute(TEST_BREAKER_KEY, successOp);
+      await breaker.execute(TEST_BREAKER_KEY, successOp);
+      await breaker.execute(TEST_BREAKER_KEY, failOp).catch(() => {});
 
-      const metrics = breaker.getMetrics();
+      const metrics = await breaker.getMetrics(TEST_BREAKER_KEY);
 
       expect(metrics.totalSuccesses).toBe(2);
       expect(metrics.totalFailures).toBe(1);
@@ -160,10 +162,10 @@ describe('Circuit Breaker', () => {
       const failOp = jest.fn().mockRejectedValue(new Error('Failure'));
 
       const beforeTime = Date.now();
-      await breaker.execute(failOp).catch(() => {});
+      await breaker.execute(TEST_BREAKER_KEY, failOp).catch(() => {});
       const afterTime = Date.now();
 
-      const metrics = breaker.getMetrics();
+      const metrics = await breaker.getMetrics(TEST_BREAKER_KEY);
 
       expect(metrics.lastFailureTime).toBeGreaterThanOrEqual(beforeTime);
       expect(metrics.lastFailureTime).toBeLessThanOrEqual(afterTime);
@@ -173,14 +175,14 @@ describe('Circuit Breaker', () => {
       const breaker = new CircuitBreaker({ failureThreshold: 2 });
       const failOp = jest.fn().mockRejectedValue(new Error('Failure'));
 
-      const initialMetrics = breaker.getMetrics();
+      const initialMetrics = await breaker.getMetrics(TEST_BREAKER_KEY);
       const initialStateChange = initialMetrics.lastStateChange;
 
       // Trip the breaker
-      await breaker.execute(failOp).catch(() => {});
-      await breaker.execute(failOp).catch(() => {});
+      await breaker.execute(TEST_BREAKER_KEY, failOp).catch(() => {});
+      await breaker.execute(TEST_BREAKER_KEY, failOp).catch(() => {});
 
-      const finalMetrics = breaker.getMetrics();
+      const finalMetrics = await breaker.getMetrics(TEST_BREAKER_KEY);
 
       expect(finalMetrics.state).toBe(CircuitBreakerState.OPEN);
       expect(finalMetrics.lastStateChange).toBeGreaterThan(initialStateChange);
@@ -194,14 +196,14 @@ describe('Circuit Breaker', () => {
 
       // 4 failures shouldn't trip
       for (let i = 0; i < 4; i++) {
-        await breaker.execute(failOp).catch(() => {});
+        await breaker.execute(TEST_BREAKER_KEY, failOp).catch(() => {});
       }
 
-      expect(breaker.getState()).toBe(CircuitBreakerState.CLOSED);
+      expect(await breaker.getState(TEST_BREAKER_KEY)).toBe(CircuitBreakerState.CLOSED);
 
       // 5th failure should trip
-      await breaker.execute(failOp).catch(() => {});
-      expect(breaker.getState()).toBe(CircuitBreakerState.OPEN);
+      await breaker.execute(TEST_BREAKER_KEY, failOp).catch(() => {});
+      expect(await breaker.getState(TEST_BREAKER_KEY)).toBe(CircuitBreakerState.OPEN);
     });
 
     it('should use custom cooldown period', async () => {
@@ -211,23 +213,23 @@ describe('Circuit Breaker', () => {
       const failOp = jest.fn().mockRejectedValue(new Error('Failure'));
 
       // Trip the breaker
-      await breaker.execute(failOp).catch(() => {});
-      expect(breaker.getState()).toBe(CircuitBreakerState.OPEN);
+      await breaker.execute(TEST_BREAKER_KEY, failOp).catch(() => {});
+      expect(await breaker.getState(TEST_BREAKER_KEY)).toBe(CircuitBreakerState.OPEN);
 
       // Advance time less than cooldown
       jest.advanceTimersByTime(5000);
 
       // Should still be open
-      await expect(breaker.execute(failOp)).rejects.toThrow(CircuitBreakerOpenError);
+      await expect(breaker.execute(TEST_BREAKER_KEY, failOp)).rejects.toThrow(CircuitBreakerOpenError);
 
       // Advance past cooldown
       jest.advanceTimersByTime(5000);
 
       // Should allow probe
       const successOp = jest.fn().mockResolvedValue('success');
-      await breaker.execute(successOp);
+      await breaker.execute(TEST_BREAKER_KEY, successOp);
 
-      expect(breaker.getState()).toBe(CircuitBreakerState.CLOSED);
+      expect(await breaker.getState(TEST_BREAKER_KEY)).toBe(CircuitBreakerState.CLOSED);
 
       jest.useRealTimers();
     });
@@ -244,19 +246,19 @@ describe('Circuit Breaker', () => {
       const successOp = jest.fn().mockResolvedValue('success');
 
       // Trip the breaker
-      await breaker.execute(failOp).catch(() => {});
-      await breaker.execute(failOp).catch(() => {});
+      await breaker.execute(TEST_BREAKER_KEY, failOp).catch(() => {});
+      await breaker.execute(TEST_BREAKER_KEY, failOp).catch(() => {});
 
       // Wait for cooldown
       jest.advanceTimersByTime(1000);
 
       // First success shouldn't close
-      await breaker.execute(successOp);
-      expect(breaker.getState()).toBe(CircuitBreakerState.HALF_OPEN);
+      await breaker.execute(TEST_BREAKER_KEY, successOp);
+      expect(await breaker.getState(TEST_BREAKER_KEY)).toBe(CircuitBreakerState.HALF_OPEN);
 
       // Second success should close
-      await breaker.execute(successOp);
-      expect(breaker.getState()).toBe(CircuitBreakerState.CLOSED);
+      await breaker.execute(TEST_BREAKER_KEY, successOp);
+      expect(await breaker.getState(TEST_BREAKER_KEY)).toBe(CircuitBreakerState.CLOSED);
 
       jest.useRealTimers();
     });
@@ -268,19 +270,19 @@ describe('Circuit Breaker', () => {
       const failOp = jest.fn().mockRejectedValue(new Error('Failure'));
 
       // Trip the breaker
-      await breaker.execute(failOp).catch(() => {});
-      await breaker.execute(failOp).catch(() => {});
+      await breaker.execute(TEST_BREAKER_KEY, failOp).catch(() => {});
+      await breaker.execute(TEST_BREAKER_KEY, failOp).catch(() => {});
 
-      expect(breaker.getState()).toBe(CircuitBreakerState.OPEN);
+      expect(await breaker.getState(TEST_BREAKER_KEY)).toBe(CircuitBreakerState.OPEN);
 
       // Reset
-      breaker.reset();
+      await breaker.reset(TEST_BREAKER_KEY);
 
-      expect(breaker.getState()).toBe(CircuitBreakerState.CLOSED);
+      expect(await breaker.getState(TEST_BREAKER_KEY)).toBe(CircuitBreakerState.CLOSED);
 
       // Should accept operations again
       const successOp = jest.fn().mockResolvedValue('success');
-      await expect(breaker.execute(successOp)).resolves.toBe('success');
+      await expect(breaker.execute(TEST_BREAKER_KEY, successOp)).resolves.toBe('success');
     });
   });
 
@@ -292,13 +294,13 @@ describe('Circuit Breaker', () => {
       // Execute multiple operations concurrently
       const promises = Array(10)
         .fill(null)
-        .map(() => breaker.execute(successOp));
+        .map(() => breaker.execute(TEST_BREAKER_KEY, successOp));
 
       const results = await Promise.all(promises);
 
       expect(results).toHaveLength(10);
       expect(results.every((r) => r === 'success')).toBe(true);
-      expect(breaker.getState()).toBe(CircuitBreakerState.CLOSED);
+      expect(await breaker.getState(TEST_BREAKER_KEY)).toBe(CircuitBreakerState.CLOSED);
     });
   });
 });
