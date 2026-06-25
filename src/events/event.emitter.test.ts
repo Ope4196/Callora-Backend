@@ -127,6 +127,80 @@ describe('calloraEvents', () => {
     expect(mockedDispatchToAll).not.toHaveBeenCalled();
   });
 
+  it('fans out settlement_completed to matching webhook subscribers', async () => {
+    WebhookStore.register({
+      developerId: 'dev_settle',
+      url: 'https://example.com/settlement-webhook',
+      events: ['settlement_completed'],
+      createdAt: new Date(),
+    });
+
+    const payload: CalloraEventPayloadMap['settlement_completed'] = {
+      settlementId: 'stl_abc',
+      amount: '12.5000000',
+      asset: 'USDC',
+      txHash: 'tx_abc',
+      settledAt: '2026-06-10T14:30:00.000Z',
+    };
+
+    expect(calloraEvents.emit('settlement_completed', 'dev_settle', payload)).toBe(true);
+    await flushAsyncListeners();
+
+    expect(mockedDispatchToAll).toHaveBeenCalledTimes(1);
+    expect(mockedDispatchToAll).toHaveBeenCalledWith(
+      [
+        expect.objectContaining({
+          developerId: 'dev_settle',
+          url: 'https://example.com/settlement-webhook',
+        }),
+      ],
+      expect.objectContaining({
+        event: 'settlement_completed',
+        developerId: 'dev_settle',
+        data: payload,
+      }),
+    );
+  });
+
+  it('skips webhook dispatch when no subscribers are registered for the event', async () => {
+    const payload: CalloraEventPayloadMap['settlement_completed'] = {
+      settlementId: 'stl_none',
+      amount: '1.0000000',
+      asset: 'USDC',
+      txHash: 'tx_none',
+      settledAt: new Date().toISOString(),
+    };
+
+    expect(calloraEvents.emit('settlement_completed', 'dev_unsubscribed', payload)).toBe(true);
+    await flushAsyncListeners();
+
+    expect(mockedDispatchToAll).not.toHaveBeenCalled();
+  });
+
+  it('does not throw when webhook dispatch fails', async () => {
+    mockedDispatchToAll.mockRejectedValueOnce(new Error('dispatcher unavailable'));
+
+    WebhookStore.register({
+      developerId: 'dev_fail',
+      url: 'https://example.com/webhook',
+      events: ['settlement_completed'],
+      createdAt: new Date(),
+    });
+
+    expect(() =>
+      calloraEvents.emit('settlement_completed', 'dev_fail', {
+        settlementId: 'stl_fail',
+        amount: '5.0000000',
+        asset: 'USDC',
+        txHash: 'tx_fail',
+        settledAt: new Date().toISOString(),
+      }),
+    ).not.toThrow();
+
+    await flushAsyncListeners();
+    expect(mockedDispatchToAll).toHaveBeenCalledTimes(1);
+  });
+
   it('supports typed listeners for each event payload shape', () => {
     const newApiListener: CalloraEventListener<'new_api_call'> = (_developerId, payload) => {
       expect(payload.apiId).toBeDefined();

@@ -3,6 +3,7 @@ import { ApiRegistry, UsageEvent, UsageStore } from '../types/gateway.js';
 import { SorobanSettlementClient } from './sorobanSettlement.js';
 import { randomUUID } from 'node:crypto';
 import { config } from '../config/index.js';
+import { calloraEvents } from '../events/event.emitter.js';
 import {
   RETRIABLE_HTTP_STATUSES,
   TransientError,
@@ -141,20 +142,27 @@ export class RevenueSettlementService {
         };
       }
 
-      // 3. Update settlement status and events
+      // 3. Update settlement status and events, then emit after DB commit
       if (result.success && result.txHash) {
         try {
           await this.settlementStore.updateStatus(settlementId, 'completed', result.txHash);
           await this.usageStore.markAsSettled(eventIds, settlementId);
 
+          await this.emitSettlementCompleted(
+            settlementId,
+            developerId,
+            totalAmount,
+            result.txHash,
+          );
+
           processed += events.length;
           settledAmount += totalAmount;
         } catch (error) {
           errors++;
-        await this.recordFailedSettlement(
-          settlementId,
-          developerId,
-          `Finalization failed after payout: ${this.getErrorMessage(error)}`,
+          await this.recordFailedSettlement(
+            settlementId,
+            developerId,
+            `Finalization failed after payout: ${this.getErrorMessage(error)}`,
             true,
           );
         }
@@ -166,6 +174,139 @@ export class RevenueSettlementService {
     }
 
     return { processed, settledAmount, errors };
+  }
+
+  /**
+   * Poll Horizon for pending settlements that already have a transaction hash.
+   * Status updates are persisted before any domain events are emitted.
+   */
+  async reconcilePendingSettlements(): Promise<{
+    checked: number;
+    completed: number;
+    failed: number;
+    errors: number;
+  }> {
+    const previousReconcile = this.reconcileTail.catch(() => undefined);
+    let releaseReconcile!: () => void;
+    this.reconcileTail = new Promise<void>((resolve) => {
+      releaseReconcile = resolve;
+    });
+
+    await previousReconcile;
+
+    try {
+      return await this.reconcilePendingSettlementsOnce();
+    } finally {
+      releaseReconcile();
+    }
+  }
+
+  private async reconcilePendingSettlementsOnce(): Promise<{
+    checked: number;
+    completed: number;
+    failed: number;
+    errors: number;
+  }> {
+    const pending = await this.settlementStore.getPendingSettlements();
+    let checked = 0;
+    let completed = 0;
+    let failed = 0;
+    let errors = 0;
+
+    for (const settlement of pending) {
+      if (!settlement.tx_hash) {
+        continue;
+      }
+
+      checked++;
+      const outcome = await this.resolveHorizonTransactionOutcome(settlement.tx_hash);
+
+      if (outcome === 'retry_exhausted') {
+        errors++;
+        continue;
+      }
+
+      try {
+        if (outcome === 'completed') {
+          await this.settlementStore.updateStatus(settlement.id, 'completed', settlement.tx_hash);
+          await this.emitSettlementCompleted(
+            settlement.id,
+            settlement.developerId,
+            settlement.amount,
+            settlement.tx_hash,
+          );
+          completed++;
+        } else {
+          await this.settlementStore.updateStatus(settlement.id, 'failed', settlement.tx_hash);
+          failed++;
+        }
+      } catch (error) {
+        errors++;
+        console.error(
+          `Settlement ${settlement.id} reconciliation failed for dev ${settlement.developerId}:`,
+          this.getErrorMessage(error),
+        );
+      }
+    }
+
+    return { checked, completed, failed, errors };
+  }
+
+  private async resolveHorizonTransactionOutcome(
+    txHash: string,
+  ): Promise<'completed' | 'failed' | 'retry_exhausted'> {
+    const horizonUrl = this.options.horizonUrl ?? config.stellar.horizonUrl;
+    const fetchImpl = this.options.fetchImpl ?? globalThis.fetch.bind(globalThis);
+    const timeoutMs = this.options.horizonRequestTimeoutMs ?? 10_000;
+    const maxAttempts = (this.options.horizonMaxRetries ?? 3) + 1;
+    const baseDelayMs = this.options.horizonRetryBaseDelayMs ?? 500;
+    const url = new URL(`transactions/${encodeURIComponent(txHash)}`, horizonUrl).toString();
+
+    try {
+      const resolution = await withRetry(
+        async (): Promise<{ terminal: true; outcome: 'completed' | 'failed' }> => {
+          let response: Response;
+
+          try {
+            response = await fetchImpl(url, { signal: AbortSignal.timeout(timeoutMs) });
+          } catch (error) {
+            if (isTransientNetworkError(error)) {
+              throw error;
+            }
+
+            throw error;
+          }
+
+          if (response.status === 404) {
+            return { terminal: true, outcome: 'failed' };
+          }
+
+          if (!response.ok) {
+            if (RETRIABLE_HTTP_STATUSES.has(response.status)) {
+              throw new TransientError(`Horizon HTTP ${response.status}`);
+            }
+
+            throw new Error(`Horizon HTTP ${response.status}`);
+          }
+
+          const body = (await response.json()) as HorizonTransactionResponse;
+          return {
+            terminal: true,
+            outcome: body.successful ? 'completed' : 'failed',
+          };
+        },
+        {
+          maxAttempts,
+          baseDelayMs,
+          jitter: false,
+          shouldRetry: (error) => isTransientNetworkError(error) || error instanceof TransientError,
+        },
+      );
+
+      return resolution.outcome;
+    } catch {
+      return 'retry_exhausted';
+    }
   }
 
   private async recordFailedSettlement(
@@ -191,6 +332,29 @@ export class RevenueSettlementService {
       `Settlement ${settlementId} failed for dev ${developerId}:`,
       errorMessage ?? 'Unknown settlement failure'
     );
+  }
+
+  /**
+   * Notify subscribers only after settlement rows and usage events are persisted.
+   * Emission is fire-and-forget; webhook delivery failures do not roll back payouts.
+   */
+  private async emitSettlementCompleted(
+    settlementId: string,
+    developerId: string,
+    amountUsdc: number,
+    txHash: string,
+  ): Promise<void> {
+    const settlements = await this.settlementStore.getDeveloperSettlements(developerId);
+    const settlement = settlements.find((entry) => entry.id === settlementId);
+    const settledAt = settlement?.completed_at ?? new Date().toISOString();
+
+    calloraEvents.emit('settlement_completed', developerId, {
+      settlementId,
+      amount: amountUsdc.toFixed(7),
+      asset: 'USDC',
+      txHash,
+      settledAt,
+    });
   }
 
   private getErrorMessage(error: unknown): string {

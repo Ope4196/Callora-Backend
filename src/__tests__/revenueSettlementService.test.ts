@@ -1,10 +1,19 @@
 import { InMemoryApiRegistry } from '../data/apiRegistry.js';
+import { calloraEvents } from '../events/event.emitter.js';
 import { RevenueSettlementService } from '../services/revenueSettlementService.js';
 import { InMemorySettlementStore } from '../services/settlementStore.js';
 import { InMemoryUsageStore } from '../services/usageStore.js';
 import type { SorobanSettlementClient } from '../services/sorobanSettlement.js';
 import type { SettlementStore } from '../types/developer.js';
 import type { ApiRegistry, UsageEvent, UsageStore } from '../types/gateway.js';
+
+jest.mock('../events/event.emitter.js', () => ({
+  calloraEvents: {
+    emit: jest.fn(),
+  },
+}));
+
+const mockedEmit = jest.mocked(calloraEvents.emit);
 
 describe('RevenueSettlementService', () => {
   let usageStore: InMemoryUsageStore;
@@ -16,6 +25,7 @@ describe('RevenueSettlementService', () => {
   let errorSpy: jest.SpyInstance;
 
   beforeEach(() => {
+    mockedEmit.mockClear();
     usageStore = new InMemoryUsageStore();
     settlementStore = new InMemorySettlementStore();
     apiRegistry = new InMemoryApiRegistry([
@@ -67,12 +77,24 @@ describe('RevenueSettlementService', () => {
     expect(settlements[0]).toMatchObject({
       developerId: 'dev_1',
       amount: 6,
-      status: 'pending',
+      status: 'completed',
       tx_hash: '0xmocktx_dev_1',
-      completed_at: null,
     });
+    expect(settlements[0]?.completed_at).toBeTruthy();
 
     expect(usageStore.getUnsettledEvents()).toHaveLength(0);
+    expect(mockedEmit).toHaveBeenCalledTimes(1);
+    expect(mockedEmit).toHaveBeenCalledWith(
+      'settlement_completed',
+      'dev_1',
+      expect.objectContaining({
+        settlementId: settlements[0]?.id,
+        amount: '6.0000000',
+        asset: 'USDC',
+        txHash: '0xmocktx_dev_1',
+        settledAt: expect.any(String),
+      }),
+    );
   });
 
   it('skips developers whose accumulated payout is below the threshold', async () => {
@@ -84,6 +106,7 @@ describe('RevenueSettlementService', () => {
     expect(distributeMock).not.toHaveBeenCalled();
     expect(settlementStore.getDeveloperSettlements('dev_1')).toHaveLength(0);
     expect(usageStore.getUnsettledEvents()).toHaveLength(1);
+    expect(mockedEmit).not.toHaveBeenCalled();
   });
 
   it('respects the max events per batch limit per developer', async () => {
@@ -133,6 +156,7 @@ describe('RevenueSettlementService', () => {
       tx_hash: null,
     });
     expect(usageStore.getUnsettledEvents()).toHaveLength(1);
+    expect(mockedEmit).not.toHaveBeenCalled();
   });
 
   it('records a failed settlement and leaves events unsettled when payout throws', async () => {
@@ -148,6 +172,7 @@ describe('RevenueSettlementService', () => {
       tx_hash: null,
     });
     expect(usageStore.getUnsettledEvents()).toHaveLength(1);
+    expect(mockedEmit).not.toHaveBeenCalled();
   });
 
   it('continues processing other developers when settlement creation fails for one developer', async () => {
@@ -169,10 +194,10 @@ describe('RevenueSettlementService', () => {
     expect(result).toEqual({ processed: 1, settledAmount: 7, errors: 1 });
     expect(settlementStore.getDeveloperSettlements('dev_1')).toHaveLength(0);
     expect(settlementStore.getDeveloperSettlements('dev_2')[0]).toMatchObject({
-      status: 'pending',
+      status: 'completed',
       tx_hash: '0xmocktx_dev_2',
-      completed_at: null,
     });
+    expect(settlementStore.getDeveloperSettlements('dev_2')[0]?.completed_at).toBeTruthy();
     expect(usageStore.getUnsettledEvents().map((event) => event.id)).toEqual(['e1']);
 
     createSpy.mockRestore();
@@ -199,6 +224,7 @@ describe('RevenueSettlementService', () => {
     });
 
     expect(usageStore.getUnsettledEvents()).toHaveLength(1);
+    expect(mockedEmit).not.toHaveBeenCalled();
     markAsSettledSpy.mockRestore();
   });
 
@@ -235,10 +261,10 @@ describe('RevenueSettlementService', () => {
       tx_hash: null,
     });
     expect(settlementStore.getDeveloperSettlements('dev_2')[0]).toMatchObject({
-      status: 'pending',
+      status: 'completed',
       tx_hash: '0xmocktx_dev_2',
-      completed_at: null,
     });
+    expect(settlementStore.getDeveloperSettlements('dev_2')[0]?.completed_at).toBeTruthy();
     expect(usageStore.getUnsettledEvents().map((event) => event.id)).toEqual(['e1']);
 
     updateStatusSpy.mockRestore();

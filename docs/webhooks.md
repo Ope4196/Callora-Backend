@@ -25,7 +25,7 @@ when specific events occur on the Callora platform.
 | Event                 | Trigger                                   |
 |-----------------------|-------------------------------------------|
 | `new_api_call`        | A developer's API is called               |
-| `settlement_completed`| An on-chain XLM settlement completes      |
+| `settlement_completed`| A USDC revenue settlement completes after DB commit |
 | `low_balance_alert`   | Developer balance drops below threshold   |
 
 ---
@@ -59,7 +59,7 @@ All events POST a JSON body with this structure:
 {
   "settlementId": "settle_001",
   "amount": "25.5000000",
-  "asset": "XLM",
+  "asset": "USDC",
   "txHash": "abc123...",
   "settledAt": "2025-06-10T14:30:00.000Z"
 }
