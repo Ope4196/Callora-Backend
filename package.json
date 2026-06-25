@@ -16,7 +16,8 @@
     "test:serial": "jest --runInBand --forceExit",
     "test:unit": "jest --runInBand --forceExit --testPathIgnorePatterns tests/integration",
     "test:integration": "jest --runInBand --forceExit tests/integration",
-    "test:coverage": "jest --runInBand --coverage --forceExit --testPathIgnorePatterns tests/integration"
+    "test:coverage": "jest --runInBand --coverage --forceExit --testPathIgnorePatterns tests/integration",
+    "test:contract": "jest --runInBand --forceExit src/__tests__/openapiContract.test.ts"
   },
   "dependencies": {
     "@prisma/adapter-pg": "^7.4.1",
