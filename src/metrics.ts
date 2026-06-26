@@ -4,7 +4,7 @@ import { performance } from 'node:perf_hooks';
 import { UnauthorizedError } from './errors/index.js';
 
 // Initialize the Prometheus Registry and collect default Node.js metrics (CPU, RAM, Event Loop)
-const register = new client.Registry();
+export const register = new client.Registry();
 client.collectDefaultMetrics({ register });
 
 // ── Route groups ──────────────────────────────────────────────────────────────
