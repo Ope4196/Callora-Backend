@@ -3,6 +3,7 @@ import { ApiRegistry, UsageEvent, UsageStore } from '../types/gateway.js';
 import { SorobanSettlementClient } from './sorobanSettlement.js';
 import { randomUUID } from 'node:crypto';
 import { config } from '../config/index.js';
+import { calloraEvents } from '../events/event.emitter.js';
 import {
   RETRIABLE_HTTP_STATUSES,
   TransientError,
@@ -173,14 +174,21 @@ export class RevenueSettlementService {
           await this.settlementStore.updateStatus(settlementId, 'pending', result.txHash);
           await this.usageStore.markAsSettled(eventIds, settlementId);
 
+          await this.emitSettlementCompleted(
+            settlementId,
+            developerId,
+            totalAmount,
+            result.txHash,
+          );
+
           processed += events.length;
           settledAmount += totalAmount;
         } catch (error) {
           errors++;
-        await this.recordFailedSettlement(
-          settlementId,
-          developerId,
-          `Finalization failed after payout: ${this.getErrorMessage(error)}`,
+          await this.recordFailedSettlement(
+            settlementId,
+            developerId,
+            `Finalization failed after payout: ${this.getErrorMessage(error)}`,
             true,
           );
         }

@@ -199,8 +199,10 @@ export const config = {
   },
   idempotency: {
     retentionWindowSeconds: env.IDEMPOTENCY_RETENTION_WINDOW_SECONDS,
+    sweeperIntervalMs: env.IDEMPOTENCY_SWEEPER_INTERVAL_MS,
   },
   listingsCache: {
     warmupTimeoutMs: env.LISTINGS_CACHE_WARMUP_TIMEOUT_MS,
   },
+  bulkEndpointLimit: env.BULK_ENDPOINT_LIMIT,
 } as const;

@@ -7,6 +7,7 @@ import { closeDbPool } from './config/health.js';
 import { disconnectPrisma } from './lib/prisma.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { createGatewayIpAllowlist } from './middleware/ipAllowlist.js';
+import { metricsEndpoint } from './metrics.js';
 import { awaitWebhookDispatcherIdle, stopWebhookDispatching } from './webhooks/webhook.dispatcher.js';
 import type { Socket } from 'net';
 import type { Server } from 'http';
@@ -22,6 +23,7 @@ import { PgUsageEventsRepository } from './repositories/usageEventsRepository.pg
 import { createRevenueLedgerIndexerJob } from './services/revenueLedgerIndexer.js';
 import { RevenueSettlementService } from './services/revenueSettlementService.js';
 import { createSettlementStatusSyncJob } from './services/settlementStatusSyncJob.js';
+import { createIdempotencySweeperJob } from './services/idempotencySweeper.js';
 import { createPostgresUsageStore } from './services/usageStore.js';
 import { createPostgresSettlementStore } from './services/settlementStore.js';
 import { createApiRegistry } from './data/apiRegistry.js';
@@ -217,6 +219,9 @@ app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', service: 'callora-backend' });
 });
 
+// Metrics endpoint
+app.get('/api/metrics', metricsEndpoint);
+
 // Check if fil is being run directly (CommonJS / ESM compatibility trick for ts-jest)
 
 if (isDirectExecution) {
@@ -265,6 +270,10 @@ if (isDirectExecution) {
     intervalMs: config.settlementSync.intervalMs,
   });
 
+  const idempotencySweeperJob = createIdempotencySweeperJob(pool, {
+    intervalMs: config.idempotency.sweeperIntervalMs,
+  });
+
   const apiKeys = new Map<string, ApiKey>([
     ['test-key-1', { key: 'test-key-1', developerId: 'dev_001', apiId: 'api_001' }],
     ['test-key-2', { key: 'test-key-2', developerId: 'dev_002', apiId: 'api_002' }],
@@ -309,6 +318,11 @@ if (isDirectExecution) {
       awaitIdle: () => revenueLedgerIndexerJob.awaitIdle(),
     },
     {
+      name: 'idempotency-sweeper',
+      beginShutdown: () => idempotencySweeperJob.beginShutdown(),
+      awaitIdle: () => idempotencySweeperJob.awaitIdle(),
+    },
+    {
       name: 'webhook-dispatcher',
       beginShutdown: stopWebhookDispatching,
       awaitIdle: awaitWebhookDispatcherIdle,
@@ -328,6 +342,7 @@ if (isDirectExecution) {
   const closeAllDataResources = async () => {
     revenueLedgerIndexerJob.stop();
     settlementStatusSyncJob.stop();
+    idempotencySweeperJob.stop();
     await closeDb();
     await Promise.allSettled([
       closePgPool(),
@@ -358,6 +373,7 @@ if (isDirectExecution) {
 
       revenueLedgerIndexerJob.start();
       settlementStatusSyncJob.start();
+      idempotencySweeperJob.start();
       
       const server = app.listen(PORT, () => {
         console.log(`Callora backend listening on http://localhost:${PORT}`);

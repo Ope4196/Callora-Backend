@@ -4,7 +4,9 @@ import type { Api, ApiEndpoint, NewApi, NewApiEndpoint } from "../db/schema.js";
 import type {
   ApiCreateInput,
   ApiWithEndpoints,
+  BulkCreateEndpointResult,
   CreateApiInput,
+  CreateEndpointInput,
   ApiDetails,
   ApiEndpointInfo,
   ApiListFilters,
@@ -111,7 +113,7 @@ export class DrizzleApiRepository implements ApiRepository {
   }
 
   async delete(id: number): Promise<boolean> {
-    const deleted = await db.delete(schema.apis).where(eq(schema.apis.id, id));
+    const result = await db.delete(schema.apis).where(eq(schema.apis.id, id));
 
     // better-sqlite3's RunResult exposes the affected row count on `changes`.
     // The database FK with ON DELETE CASCADE will automatically clean up endpoints.
@@ -236,5 +238,37 @@ export class DrizzleApiRepository implements ApiRepository {
       price_per_call_usdc: r.price_per_call_usdc,
       description: r.description,
     }));
+  }
+
+  async bulkCreateEndpoints(
+    apiId: number,
+    endpoints: CreateEndpointInput[],
+  ): Promise<BulkCreateEndpointResult[]> {
+    return db.transaction(async (tx) => {
+      const rows = await tx
+        .insert(schema.apiEndpoints)
+        .values(
+          endpoints.map(
+            (e) =>
+              ({
+                api_id: apiId,
+                path: e.path,
+                method: e.method,
+                price_per_call_usdc: e.price_per_call_usdc,
+                description: e.description ?? null,
+              }) as NewApiEndpoint,
+          ),
+        )
+        .returning();
+
+      return rows.map((r) => ({
+        id: r.id,
+        api_id: r.api_id,
+        path: r.path,
+        method: r.method,
+        price_per_call_usdc: r.price_per_call_usdc,
+        description: r.description,
+      }));
+    });
   }
 }

@@ -61,8 +61,14 @@ const createApiRepository = (apis: Api[]): ApiRepository => ({
   async create() {
     throw new Error('not implemented');
   },
+  async createWithEndpoints() {
+    throw new Error('not implemented');
+  },
   async update() {
     return null;
+  },
+  async delete() {
+    return true;
   },
   async listByDeveloper(developerId: number) {
     return apis.filter((api) => api.developer_id === developerId);

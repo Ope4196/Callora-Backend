@@ -23,7 +23,7 @@ CREATE INDEX IF NOT EXISTS idx_refresh_tokens_revoked ON refresh_tokens(is_revok
 
 -- Composite index for active token lookups
 CREATE INDEX IF NOT EXISTS idx_refresh_tokens_active ON refresh_tokens(user_id, expires_at, is_revoked) 
-WHERE is_revoked = FALSE AND expires_at > CURRENT_TIMESTAMP;
+WHERE is_revoked = FALSE;
 
 -- Comments for documentation
 COMMENT ON TABLE refresh_tokens IS 'Stores JWT refresh tokens for secure token rotation and revocation';

@@ -157,7 +157,10 @@ Run `npm run lint`, `npm run typecheck`, and `npm test` after editing the fixtur
 ### Observability (Prometheus Metrics)
 
 The application exposes a standard Prometheus text-format metrics endpoint at `GET /api/metrics`.
-It automatically tracks `http_requests_total`, `http_request_duration_seconds`, and default Node.js system metrics.
+It automatically tracks:
+- `http_requests_total` and `http_request_duration_seconds` for REST API endpoints.
+- `gateway_api_key_lookup_total{outcome}` to track API key lookups in the gateway auth middleware, with `outcome` labels of `hit`, `miss`, `revoked`, or `expired`.
+- Default Node.js system metrics (CPU, RAM, Event Loop).
 
 #### Production Security:
 In production (NODE_ENV=production), this endpoint is protected. You must configure the METRICS_API_KEY environment variable and scrape the endpoint using an authorization header:
@@ -186,6 +189,7 @@ callora-backend/
 | `STELLAR_TRANSACTION_TIMEOUT` | Transaction timeout (seconds) | `30` |
 | `BILLING_MAX_CONCURRENCY_PER_DEV` | Max concurrent deducts per developer | `1` |
 | `BILLING_SEMAPHORE_TTL_MS` | Idle semaphore state TTL in ms | `300000` |
+| `IDEMPOTENCY_SWEEPER_INTERVAL_MS` | Interval for periodic idempotency cleanup in milliseconds | `60000` |
 | `CIRCUIT_BREAKER_THRESHOLD` | Failures before opening circuit | `5` |
 | `CIRCUIT_BREAKER_COOLDOWN_MS` | Cooldown period (ms) | `30000` |
 | `RETRY_MAX_ATTEMPTS` | Maximum retry attempts | `3` |

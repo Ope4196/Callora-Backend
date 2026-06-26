@@ -4,7 +4,7 @@ import { performance } from 'node:perf_hooks';
 import { UnauthorizedError } from './errors/index.js';
 
 // Initialize the Prometheus Registry and collect default Node.js metrics (CPU, RAM, Event Loop)
-const register = new client.Registry();
+export const register = new client.Registry();
 client.collectDefaultMetrics({ register });
 
 // ── Route groups ──────────────────────────────────────────────────────────────
@@ -464,12 +464,23 @@ const proxyPrematureAbortsTotal = new client.Counter({
   help: 'Total number of proxy responses where the client connection closed before the response finished (premature abort)',
 });
 
+const idempotencyStoreRows = new client.Gauge({
+  name: 'idempotency_store_rows',
+  help: 'Current number of rows in the idempotency_store table',
+});
+
 register.registerMetric(proxyPrematureAbortsTotal);
+register.registerMetric(idempotencyStoreRows);
 
 /** Increment the premature-abort counter. Called by proxyRoutes when a response
  *  emits `close` without a preceding `finish` event. */
 export function recordProxyPrematureAbort(): void {
   proxyPrematureAbortsTotal.inc();
+}
+
+/** Update the current number of active idempotency rows for monitoring. */
+export function setIdempotencyStoreRows(value: number): void {
+  idempotencyStoreRows.set(value);
 }
 
 /** Exposed for testing — reset all metrics including upstream and HTTP. */
@@ -484,5 +495,6 @@ export function resetAllMetrics(): void {
   apisListingCacheHits.reset();
   apisListingCacheMisses.reset();
   proxyPrematureAbortsTotal.reset();
+  idempotencyStoreRows.reset();
   gatewayUpstreamBreakerState.reset();
 }
