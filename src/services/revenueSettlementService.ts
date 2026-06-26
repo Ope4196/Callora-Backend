@@ -3,6 +3,7 @@ import { ApiRegistry, UsageEvent, UsageStore } from '../types/gateway.js';
 import { SorobanSettlementClient } from './sorobanSettlement.js';
 import { randomUUID } from 'node:crypto';
 import { config } from '../config/index.js';
+import { calloraEvents } from '../events/event.emitter.js';
 import {
   RETRIABLE_HTTP_STATUSES,
   TransientError,
@@ -165,20 +166,27 @@ export class RevenueSettlementService {
         };
       }
 
-      // 3. Update settlement status and events
+      // 3. Update settlement status and events, then emit after DB commit
       if (result.success && result.txHash) {
         try {
           await this.settlementStore.updateStatus(settlementId, 'completed', result.txHash);
           await this.usageStore.markAsSettled(eventIds, settlementId);
 
+          await this.emitSettlementCompleted(
+            settlementId,
+            developerId,
+            totalAmount,
+            result.txHash,
+          );
+
           processed += events.length;
           settledAmount += totalAmount;
         } catch (error) {
           errors++;
-        await this.recordFailedSettlement(
-          settlementId,
-          developerId,
-          `Finalization failed after payout: ${this.getErrorMessage(error)}`,
+          await this.recordFailedSettlement(
+            settlementId,
+            developerId,
+            `Finalization failed after payout: ${this.getErrorMessage(error)}`,
             true,
           );
         }
@@ -310,6 +318,29 @@ export class RevenueSettlementService {
       `Settlement ${settlementId} failed for dev ${developerId}:`,
       errorMessage ?? 'Unknown settlement failure'
     );
+  }
+
+  /**
+   * Notify subscribers only after settlement rows and usage events are persisted.
+   * Emission is fire-and-forget; webhook delivery failures do not roll back payouts.
+   */
+  private async emitSettlementCompleted(
+    settlementId: string,
+    developerId: string,
+    amountUsdc: number,
+    txHash: string,
+  ): Promise<void> {
+    const settlements = await this.settlementStore.getDeveloperSettlements(developerId);
+    const settlement = settlements.find((entry) => entry.id === settlementId);
+    const settledAt = settlement?.completed_at ?? new Date().toISOString();
+
+    calloraEvents.emit('settlement_completed', developerId, {
+      settlementId,
+      amount: amountUsdc.toFixed(7),
+      asset: 'USDC',
+      txHash,
+      settledAt,
+    });
   }
 
   private getErrorMessage(error: unknown): string {
