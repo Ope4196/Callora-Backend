@@ -157,7 +157,10 @@ Run `npm run lint`, `npm run typecheck`, and `npm test` after editing the fixtur
 ### Observability (Prometheus Metrics)
 
 The application exposes a standard Prometheus text-format metrics endpoint at `GET /api/metrics`.
-It automatically tracks `http_requests_total`, `http_request_duration_seconds`, and default Node.js system metrics.
+It automatically tracks:
+- `http_requests_total` and `http_request_duration_seconds` for REST API endpoints.
+- `gateway_api_key_lookup_total{outcome}` to track API key lookups in the gateway auth middleware, with `outcome` labels of `hit`, `miss`, `revoked`, or `expired`.
+- Default Node.js system metrics (CPU, RAM, Event Loop).
 
 #### Production Security:
 In production (NODE_ENV=production), this endpoint is protected. You must configure the METRICS_API_KEY environment variable and scrape the endpoint using an authorization header:

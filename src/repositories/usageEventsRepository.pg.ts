@@ -34,7 +34,6 @@ export interface BillingUsageEvent {
 export interface RevenueLedgerUsageEvent {
   usageEventId: string;
   apiId: string;
-  developerId: string;
   amount: bigint;
   createdAt: Date;
 }
@@ -46,7 +45,7 @@ export interface UsageEventsPgRepository {
   getTotalSpentByUser(userId: string, from?: Date, to?: Date): Promise<bigint>;
   getTotalRevenueByApi(apiId: string, from?: Date, to?: Date): Promise<bigint>;
   findUnindexedRevenueLedgerEvents(cursor?: string, limit?: number): Promise<RevenueLedgerUsageEvent[]>;
-  indexRevenueLedgerEvent(event: RevenueLedgerUsageEvent): Promise<boolean>;
+  indexRevenueLedgerEvent(event: RevenueLedgerUsageEvent, developerId: string): Promise<boolean>;
 }
 
 export interface UsageEventsRepositoryQueryable {
@@ -73,7 +72,6 @@ interface TotalRow {
 interface RevenueLedgerUsageEventRow {
   usage_event_id: string | number | bigint;
   api_id: string;
-  developer_id: string;
   amount_usdc: string | number | bigint;
   created_at: Date | string;
 }
@@ -183,7 +181,6 @@ const mapRevenueLedgerUsageEventRow = (
 ): RevenueLedgerUsageEvent => ({
   usageEventId: String(row.usage_event_id),
   apiId: row.api_id,
-  developerId: row.developer_id,
   amount: toBigInt(row.amount_usdc, 'amount_usdc'),
   createdAt: row.created_at instanceof Date ? row.created_at : new Date(row.created_at),
 });
@@ -343,12 +340,9 @@ export class PgUsageEventsRepository implements UsageEventsPgRepository {
         SELECT
           ue.id AS usage_event_id,
           ue.api_id,
-          a.developer_id,
           ue.amount_usdc,
           ue.created_at
         FROM usage_events ue
-        INNER JOIN apis a
-          ON a.id = ue.api_id
         LEFT JOIN revenue_ledger rl
           ON rl.usage_event_id = ue.id
         WHERE ue.id > $1
@@ -362,7 +356,7 @@ export class PgUsageEventsRepository implements UsageEventsPgRepository {
     return result.rows.map(mapRevenueLedgerUsageEventRow);
   }
 
-  async indexRevenueLedgerEvent(event: RevenueLedgerUsageEvent): Promise<boolean> {
+  async indexRevenueLedgerEvent(event: RevenueLedgerUsageEvent, developerId: string): Promise<boolean> {
     const result = await this.db.query<{ inserted: number }>(
       `
         INSERT INTO revenue_ledger (
@@ -383,7 +377,7 @@ export class PgUsageEventsRepository implements UsageEventsPgRepository {
       `,
       [
         assertNonEmpty(event.apiId, 'apiId'),
-        assertNonEmpty(event.developerId, 'developerId'),
+        assertNonEmpty(developerId, 'developerId'),
         assertAmount(event.amount).toString(),
         normalizeCursor(event.usageEventId) ?? '0',
         event.createdAt,

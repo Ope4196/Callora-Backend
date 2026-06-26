@@ -1,6 +1,7 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import type { NextFunction, Request, RequestHandler } from 'express';
 import { ForbiddenError, NotFoundError, UnauthorizedError } from '../errors/index.js';
+import { recordApiKeyLookup } from '../metrics.js';
 
 export const API_KEY_PREFIX_LENGTH = 16;
 
@@ -15,6 +16,7 @@ export interface GatewayApiKeyRecord {
   rateLimitPerMinute?: number | null;
   createdAt?: Date | string;
   lastUsedAt?: Date | string | null;
+  expiresAt?: Date | string | null;
 }
 
 export interface GatewayAuthCandidate<
@@ -58,6 +60,7 @@ export interface InMemoryGatewayApiKey {
   developerId: string;
   apiId: string;
   revoked?: boolean;
+  expiresAt?: Date | string | null;
 }
 
 export interface GatewayAuthQueryable {
@@ -75,6 +78,7 @@ export interface DatabaseGatewayApiKeyRow {
   rate_limit_per_minute: number | null;
   created_at: string | Date | null;
   last_used_at: string | Date | null;
+  expires_at?: string | Date | null;
   user: Record<string, unknown> | null;
   vault: Record<string, unknown> | null;
 }
@@ -170,12 +174,15 @@ export function createGatewayApiKeyAuthMiddleware<
   return async (req, res, next) => {
     const extracted = extractApiKey(req);
     if (!extracted.apiKey) {
+      // No key was provided or the header format was invalid
+      recordApiKeyLookup('miss');
       handleUnauthorized(next, extracted.error ?? 'Unauthorized: missing API key');
       return;
     }
 
     const resolvedContext = await options.resolveApiContext(req);
     if (!resolvedContext) {
+      recordApiKeyLookup('miss');
       handleNotFound(next, 'Not Found: unknown API');
       return;
     }
@@ -183,6 +190,7 @@ export function createGatewayApiKeyAuthMiddleware<
     const prefix = extracted.apiKey.slice(0, API_KEY_PREFIX_LENGTH);
     const candidates = await options.getApiKeyCandidates(prefix, req);
     if (candidates.length === 0) {
+      recordApiKeyLookup('miss');
       handleUnauthorized(next, 'Unauthorized: API key not found');
       return;
     }
@@ -196,25 +204,42 @@ export function createGatewayApiKeyAuthMiddleware<
     }
 
     if (!matchedCandidate) {
+      recordApiKeyLookup('miss');
       handleUnauthorized(next, 'Unauthorized: invalid API key');
       return;
     }
 
     if (matchedCandidate.apiKeyRecord.revoked) {
+      // The key exists but was explicitly revoked by the developer
+      recordApiKeyLookup('revoked');
       handleForbidden(next, 'Unauthorized: API key has been revoked');
       return;
     }
 
+    if (matchedCandidate.apiKeyRecord.expiresAt) {
+      const expiresAt = new Date(matchedCandidate.apiKeyRecord.expiresAt);
+      if (expiresAt.getTime() < Date.now()) {
+        // The key exists but its expiration timestamp has passed
+        recordApiKeyLookup('expired');
+        handleUnauthorized(next, 'Unauthorized: API key has expired');
+        return;
+      }
+    }
+
     if (!matchedCandidate.user || matchedCandidate.vault === undefined) {
+      recordApiKeyLookup('miss');
       handleUnauthorized(next, 'Unauthorized: API key context is incomplete');
       return;
     }
 
     if (String(matchedCandidate.apiKeyRecord.apiId) !== options.getApiId(resolvedContext.api)) {
+      recordApiKeyLookup('miss');
       handleUnauthorized(next, 'Unauthorized: API key does not grant access to this API');
       return;
     }
 
+    // Authentication successful: all checks passed
+    recordApiKeyLookup('hit');
     req.apiKeyValue = extracted.apiKey;
     req.apiKeyRecord = matchedCandidate.apiKeyRecord as unknown as Record<string, unknown>;
     req.user = matchedCandidate.user as Record<string, unknown>;
@@ -249,6 +274,7 @@ export function createMapBackedGatewayApiKeyAuthMiddleware<
             prefix: rawKey.slice(0, API_KEY_PREFIX_LENGTH),
             keyHash: sha256Hex(rawKey),
             revoked: record.revoked ?? false,
+            expiresAt: record.expiresAt ?? undefined,
           },
           user: { id: record.developerId },
           vault: null,
@@ -318,6 +344,7 @@ export function createDatabaseGatewayApiKeyAuthMiddleware<
           rateLimitPerMinute: row.rate_limit_per_minute,
           createdAt: row.created_at ?? undefined,
           lastUsedAt: row.last_used_at ?? undefined,
+          expiresAt: row.expires_at ?? undefined,
         },
         user: row.user ?? {},
         vault: row.vault,

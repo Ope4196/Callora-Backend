@@ -7,6 +7,7 @@ import { closeDbPool } from './config/health.js';
 import { disconnectPrisma } from './lib/prisma.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { createGatewayIpAllowlist } from './middleware/ipAllowlist.js';
+import { metricsEndpoint } from './metrics.js';
 import { awaitWebhookDispatcherIdle, stopWebhookDispatching } from './webhooks/webhook.dispatcher.js';
 import type { Socket } from 'net';
 import type { Server } from 'http';
@@ -216,6 +217,9 @@ app.use((req, res, next) => {
 app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', service: 'callora-backend' });
 });
+
+// Metrics endpoint
+app.get('/api/metrics', metricsEndpoint);
 
 // Check if fil is being run directly (CommonJS / ESM compatibility trick for ts-jest)
 

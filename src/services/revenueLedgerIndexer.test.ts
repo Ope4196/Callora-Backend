@@ -91,7 +91,10 @@ test('RevenueLedgerIndexer backfills unindexed usage events in cursor-ordered ba
       createdAt: new Date('2026-02-03T10:00:00.000Z'),
     });
 
-    const indexer = new RevenueLedgerIndexer(repository, { batchSize: 2 });
+    const indexer = new RevenueLedgerIndexer(repository, {
+      batchSize: 2,
+      resolveDeveloperId: async (apiId) => `dev-${apiId.replace('api-', '')}`,
+    });
     const firstRun = await indexer.runOnce();
     const secondRun = await indexer.runOnce();
     const rows = await pool.query(
@@ -146,6 +149,7 @@ test('RevenueLedgerIndexerJob drains in-flight work during shutdown', async () =
       intervalMs: 1_000,
       batchSize: 10,
       logger: { error: jest.fn() },
+      resolveDeveloperId: async (apiId) => `dev-${apiId.replace('api-', '')}`,
     });
 
     job.start();
@@ -201,7 +205,10 @@ test('RevenueLedgerIndexer validates configuration and logs insert failures', as
     indexRevenueLedgerEvent: jest.fn().mockRejectedValue(new Error('boom')),
   } as unknown as PgUsageEventsRepository;
 
-  const indexer = new RevenueLedgerIndexer(repository, { logger });
+  const indexer = new RevenueLedgerIndexer(repository, {
+    logger,
+    resolveDeveloperId: async (apiId) => `dev-${apiId.replace('api-', '')}`,
+  });
 
   await assert.rejects(indexer.runOnce(), /boom/);
   await indexer.awaitIdle();
@@ -244,6 +251,7 @@ test('RevenueLedgerIndexerJob validates interval and skips overlapping ticks', a
       intervalMs: 100,
       batchSize: 10,
       logger: { error: jest.fn() },
+      resolveDeveloperId: async (apiId) => `dev-${apiId.replace('api-', '')}`,
     });
 
     job.stop();
@@ -290,6 +298,7 @@ test('RevenueLedgerIndexerJob logs job failures and stop is safe when idle', asy
     intervalMs: 1_000,
     batchSize: 10,
     logger,
+    resolveDeveloperId: async (apiId) => `dev-${apiId.replace('api-', '')}`,
   });
 
   job.stop();

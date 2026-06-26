@@ -28,11 +28,6 @@ function createUsageEventsRepository() {
       created_at TIMESTAMP NOT NULL DEFAULT NOW()
     );
 
-    CREATE TABLE apis (
-      id VARCHAR(255) PRIMARY KEY,
-      developer_id VARCHAR(255) NOT NULL
-    );
-
     CREATE TABLE revenue_ledger (
       id BIGSERIAL PRIMARY KEY,
       api_id VARCHAR(255) NOT NULL,
@@ -485,10 +480,7 @@ test('findUnindexedRevenueLedgerEvents resolves developer ownership from apis an
   const { repository, pool } = createUsageEventsRepository();
 
   try {
-    await pool.query(
-      'INSERT INTO apis (id, developer_id) VALUES ($1, $2), ($3, $4)',
-      ['api-weather', 'dev-weather', 'api-chat', 'dev-chat'],
-    );
+    // No apis table in Postgres anymore
 
     await repository.create({
       userId: 'consumer-1',
@@ -538,9 +530,14 @@ test('findUnindexedRevenueLedgerEvents resolves developer ownership from apis an
       {
         usageEventId: '2',
         apiId: 'api-chat',
-        developerId: 'dev-chat',
         amount: 250n,
         createdAt: new Date('2026-02-02T10:00:00.000Z'),
+      },
+      {
+        usageEventId: '3',
+        apiId: 'api-missing',
+        amount: 999n,
+        createdAt: new Date('2026-02-03T10:00:00.000Z'),
       },
     ]);
   } finally {
@@ -565,17 +562,15 @@ test('indexRevenueLedgerEvent inserts idempotently by usageEventId', async () =>
     const insertedFirst = await repository.indexRevenueLedgerEvent({
       usageEventId: '1',
       apiId: 'api-weather',
-      developerId: 'dev-weather',
       amount: 1500n,
       createdAt: new Date('2026-02-05T10:00:00.000Z'),
-    });
+    }, 'dev-weather');
     const insertedDuplicate = await repository.indexRevenueLedgerEvent({
       usageEventId: '1',
       apiId: 'api-weather',
-      developerId: 'dev-weather',
       amount: 1500n,
       createdAt: new Date('2026-02-05T10:00:00.000Z'),
-    });
+    }, 'dev-weather');
     const count = await pool.query(
       'SELECT COUNT(*)::text AS count FROM revenue_ledger WHERE usage_event_id = $1',
       ['1'],

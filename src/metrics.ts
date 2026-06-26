@@ -4,7 +4,7 @@ import { performance } from 'node:perf_hooks';
 import { UnauthorizedError } from './errors/index.js';
 
 // Initialize the Prometheus Registry and collect default Node.js metrics (CPU, RAM, Event Loop)
-const register = new client.Registry();
+export const register = new client.Registry();
 client.collectDefaultMetrics({ register });
 
 // ── Route groups ──────────────────────────────────────────────────────────────
@@ -323,10 +323,33 @@ export function recordCacheMiss(): void {
   apisListingCacheMisses.inc();
 }
 
+// ── Gateway API key lookup counters ──────────────────────────────────────────
+//
+// Metric: gateway_api_key_lookup_total
+//   Type:    Counter
+//   Labels:  outcome (hit, miss, revoked, expired)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type ApiKeyLookupOutcome = 'hit' | 'miss' | 'revoked' | 'expired';
+
+const gatewayApiKeyLookupTotal = new client.Counter({
+  name: 'gateway_api_key_lookup_total',
+  help: 'Total number of gateway API key lookup outcomes',
+  labelNames: ['outcome'],
+});
+
+register.registerMetric(gatewayApiKeyLookupTotal);
+
+/** Increment the API key lookup outcome counter. */
+export function recordApiKeyLookup(outcome: ApiKeyLookupOutcome): void {
+  gatewayApiKeyLookupTotal.inc({ outcome });
+}
+
 /** Exposed for testing — reset all metrics including upstream and HTTP. */
 export function resetAllMetrics(): void {
   resetUpstreamMetrics();
   resetHttpMetrics();
   apisListingCacheHits.reset();
   apisListingCacheMisses.reset();
+  gatewayApiKeyLookupTotal.reset();
 }
