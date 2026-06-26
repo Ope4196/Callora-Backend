@@ -32,7 +32,7 @@ const developerRepository: DeveloperRepository = {
   async getOrCreateByUserId(userId: string) {
     return userId === developerProfile.user_id ? developerProfile : { ...developerProfile, id: 999, user_id: userId };
   },
-  async upsertProfile(userId: string) {
+  async upsertProfile(_userId: string) {
     return developerProfile;
   },
 };
