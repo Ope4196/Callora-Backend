@@ -2,7 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import { z } from 'zod';
-import { createAdminRouter } from './routes/admin.js';
+import adminRouter from './routes/admin.js';
 import { createApiRouter } from './routes/index.js';
 import { createApisRouter } from './routes/apis.js';
 import { pool } from './db.js';
@@ -52,7 +52,6 @@ import {
 import { apiKeyRepository } from './repositories/apiKeyRepository.js';
 import { apiRegistrationSchema } from './validators/apiRegistration.js';
 import { stellarNetworkQuerySchema } from './validators/networkSchema.js';
-import { createUsageStore, type UsageAdminStore } from './services/usageStore.js';
 
 interface AppDependencies {
   usageEventsRepository?: UsageEventsRepository;
@@ -60,7 +59,6 @@ interface AppDependencies {
   vaultRepository?: VaultRepository;
   apiRepository?: ApiRepository;
   developerRepository?: DeveloperRepository;
-  usageStore?: UsageAdminStore;
   findDeveloperByUserId?: (userId: string) => Promise<Developer | undefined>;
   createApiWithEndpoints?: (input: CreateApiInput) => Promise<ApiWithEndpoints>;
 }
@@ -105,7 +103,6 @@ export const createApp = (dependencies?: Partial<AppDependencies>) => {
   const vaultController = new VaultController(vaultRepository);
   const apiRepository = dependencies?.apiRepository ?? defaultApiRepository;
   const developerRepository = dependencies?.developerRepository ?? defaultDeveloperRepository;
-  const usageStore = dependencies?.usageStore ?? createUsageStore();
 
   // Production-safe security headers with environment-based configuration
   const isProduction = process.env.NODE_ENV === 'production';
@@ -253,7 +250,7 @@ export const createApp = (dependencies?: Partial<AppDependencies>) => {
     }
   });
 
-  app.use('/api/admin', createAdminRouter({ usageStore }));
+  app.use('/api/admin', adminRouter);
 
   // Prometheus metrics endpoint — auth-gated in production
   app.get('/api/metrics', metricsEndpoint);

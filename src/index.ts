@@ -15,7 +15,7 @@ import type { RequestHandler } from 'express';
 import { createDeveloperRouter } from './routes/developerRoutes.js';
 import { createGatewayRouter } from './routes/gatewayRoutes.js';
 import { createProxyRouter } from './routes/proxyRoutes.js';
-import { createAdminRouter } from './routes/admin.js';
+import adminRouter from './routes/admin.js';
 import { defaultDeveloperRepository } from './repositories/developerRepository.js';
 import { createBillingService } from './services/billingService.js';
 import { createRateLimiter } from './services/rateLimiter.js';
@@ -278,7 +278,7 @@ if (isDirectExecution) {
     developerRepository: defaultDeveloperRepository,
   });
   app.use('/api/developers', developerRouter);
-  app.use('/api/admin', createAdminRouter({ usageStore }));
+  app.use('/api/admin', adminRouter);
 
   // Legacy gateway route (existing)
   const gatewayRouter = createGatewayRouter({
