@@ -109,6 +109,41 @@
               }
             }
           },
+          "responses": {
+            "200": {
+    ...
+            },
+            "400": {
+    ...
+            },
+            "401": {
+    ...
+            },
+            "402": {
+    ...
+            },
+            "409": {
+              "description": "Idempotency conflict",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ErrorResponse"
+                  }
+                }
+              }
+            },
+            "429": {
+              "description": "Rate limit exceeded",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ErrorResponse"
+                  }
+                }
+              }
+            },
+            "500": {}
+          },
           "500": {
             "description": "Internal server error",
             "content": {
