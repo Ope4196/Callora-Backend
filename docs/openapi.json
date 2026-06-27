@@ -6,10 +6,53 @@
     "description": "API contract covering Callora backend billing, usage, and developer routes."
   },
   "paths": {
+    "/api/gateway/health/{apiSlug}": {
+      "get": {
+        "summary": "Get gateway health for an API",
+        "description": "Returns aggregated upstream latency percentiles and circuit breaker state for a given API slug. Public endpoint — no authentication required. Only aggregated metrics are returned; no tenant identifiers or raw histogram data are exposed. Results are cached in-memory for 5 seconds.",
+        "parameters": [
+          {
+            "name": "apiSlug",
+            "in": "path",
+            "required": true,
+            "description": "The API slug to query health for",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Health data retrieved successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayHealthResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "API slug not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/billing/deduct": {
       "post": {
         "summary": "Deduct billing balance for an API call",
         "description": "Deducts USDC from the user's vault balance to pay for an API call. Authenticated and idempotent.",
+        "externalDocs": {
+          "description": "SDK idempotency contract and retry guidance",
+          "url": "./sdk/billing-deduct.md"
+        },
         "security": [
           {
             "bearerAuth": []
@@ -612,6 +655,90 @@
           }
         }
       }
+    },
+    "/api/apis/{id}/endpoints/bulk": {
+      "post": {
+        "summary": "Bulk register endpoints for an API",
+        "description": "Registers multiple endpoints atomically for the specified API. All endpoints are inserted in a single transaction; if any endpoint is invalid the entire batch is rolled back. Authenticated developer must own the API.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            },
+            "description": "Numerical ID of the API"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BulkEndpointRegistrationRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Endpoints registered successfully — per-row details returned",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BulkEndpointRegistrationResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation error — invalid endpoint data, empty array, or too many endpoints",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "API not found or does not belong to the developer",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -1071,6 +1198,89 @@
           }
         }
       },
+      "BulkEndpointRegistrationRequest": {
+        "type": "object",
+        "required": [
+          "endpoints"
+        ],
+        "properties": {
+          "endpoints": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 50,
+            "items": {
+              "type": "object",
+              "required": [
+                "path",
+                "method",
+                "price_per_call_usdc"
+              ],
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "description": "URL path starting with /"
+                },
+                "method": {
+                  "type": "string",
+                  "enum": ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
+                },
+                "price_per_call_usdc": {
+                  "type": "string",
+                  "description": "Non-negative decimal string (e.g. \"0.01\")"
+                },
+                "description": {
+                  "type": "string",
+                  "description": "Optional human-readable description"
+                }
+              }
+            }
+          }
+        }
+      },
+      "BulkEndpointRegistrationResponse": {
+        "type": "object",
+        "required": [
+          "endpoints"
+        ],
+        "properties": {
+          "endpoints": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "api_id",
+                "path",
+                "method",
+                "price_per_call_usdc"
+              ],
+              "properties": {
+                "id": {
+                  "type": "integer",
+                  "description": "Auto-generated endpoint ID"
+                },
+                "api_id": {
+                  "type": "integer",
+                  "description": "Owning API ID"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "method": {
+                  "type": "string"
+                },
+                "price_per_call_usdc": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string",
+                  "nullable": true
+                }
+              }
+            }
+          }
+        }
+      },
       "ApiDetailsResponse": {
         "type": "object",
         "required": [
@@ -1240,6 +1450,54 @@
           }
         }
       },
+      "GatewayHealthResponse": {
+        "type": "object",
+        "required": [
+          "apiSlug",
+          "latency",
+          "breaker"
+        ],
+        "properties": {
+          "apiSlug": {
+            "type": "string"
+          },
+          "latency": {
+            "type": "object",
+            "required": [
+              "p50",
+              "p95"
+            ],
+            "properties": {
+              "p50": {
+                "type": "number",
+                "nullable": true,
+                "description": "P50 latency in milliseconds (null if no traffic yet)"
+              },
+              "p95": {
+                "type": "number",
+                "nullable": true,
+                "description": "P95 latency in milliseconds (null if no traffic yet)"
+              }
+            }
+          },
+          "breaker": {
+            "type": "object",
+            "required": [
+              "state"
+            ],
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "closed",
+                  "open",
+                  "half-open"
+                ]
+              }
+            }
+          }
+        }
+      },
       "ErrorResponse": {
         "type": "object",
         "required": [
@@ -1249,7 +1507,7 @@
         ],
         "properties": {
           "code": {
-            "type": "string"
+            "$ref": "#/components/schemas/ErrorCode"
           },
           "message": {
             "type": "string"
@@ -1264,6 +1522,87 @@
             }
           }
         }
+      },
+      "ErrorCode": {
+        "type": "string",
+        "enum": [
+          "BAD_REQUEST",
+          "UNAUTHORIZED",
+          "FORBIDDEN",
+          "NOT_FOUND",
+          "PAYMENT_REQUIRED",
+          "TOO_MANY_REQUESTS",
+          "CONFLICT",
+          "INTERNAL_SERVER_ERROR",
+          "BAD_GATEWAY",
+          "SERVICE_UNAVAILABLE",
+          "GATEWAY_TIMEOUT",
+          "VALIDATION_ERROR",
+          "INVALID_BODY",
+          "INVALID_QUERY",
+          "INVALID_PARAMS",
+          "INVALID_VALUE",
+          "GATEWAY_AUTH_CONTEXT_MISSING",
+          "UPSTREAM_TARGET_BLOCKED",
+          "INSUFFICIENT_BALANCE",
+          "SOROBAN_RPC_TIMEOUT",
+          "SOROBAN_RPC_ERROR",
+          "BILLING_DEDUCTION_FAILED",
+          "BILLING_REQUEST_NOT_FOUND",
+          "DEVELOPER_NOT_FOUND",
+          "API_ACCESS_FORBIDDEN",
+          "API_KEY_NOT_FOUND",
+          "API_KEY_FORBIDDEN",
+          "MISSING_REFRESH_TOKEN",
+          "INVALID_REFRESH_TOKEN",
+          "REVOKED_TOKEN",
+          "EXPIRED_TOKEN",
+          "REFRESH_FAILED",
+          "REVOKE_FAILED",
+          "NOT_AUTHENTICATED",
+          "TOKEN_INFO_FAILED",
+          "VAULT_NOT_FOUND",
+          "VAULT_BALANCE_RETRIEVAL_FAILED",
+          "MISSING_AMOUNT",
+          "INVALID_AMOUNT_TYPE",
+          "INVALID_AMOUNT_FORMAT",
+          "INVALID_NETWORK",
+          "NETWORK_MISMATCH",
+          "INVALID_SOURCE_ACCOUNT",
+          "INVALID_TRANSACTION_INPUT",
+          "SOURCE_ACCOUNT_NOT_FOUND",
+          "INVALID_CONTRACT_ID",
+          "NETWORK_UNAVAILABLE",
+          "TRANSACTION_BUILD_FAILED",
+          "INTERNAL_ERROR",
+          "INVALID_WEBHOOK_REGISTRATION",
+          "INVALID_WEBHOOK_EVENT_TYPES",
+          "WEBHOOK_NOT_FOUND",
+          "INVALID_WEBHOOK_URL",
+          "WEBHOOK_URL_VALIDATION_FAILED",
+          "MISSING_WEBHOOK_SIGNATURE_HEADERS",
+          "INVALID_WEBHOOK_TIMESTAMP",
+          "WEBHOOK_TIMESTAMP_OUT_OF_WINDOW",
+          "MALFORMED_WEBHOOK_SIGNATURE",
+          "INVALID_WEBHOOK_SIGNATURE",
+          "INVALID_IP_FORMAT",
+          "IP_NOT_ALLOWED",
+          "DATABASE_NOT_AVAILABLE",
+          "IDEMPOTENCY_CONFLICT",
+          "IDEMPOTENCY_IN_PROGRESS",
+          "SIMULATION_FAILED",
+          "INVALID_AUTH_HEADER",
+          "MISSING_TOKEN",
+          "INVALID_TOKEN",
+          "MISSING_CLAIMS",
+          "TOKEN_EXPIRED",
+          "TOKEN_NOT_ACTIVE",
+          "REQUEST_TIMEOUT",
+          "REQUEST_BODY_TOO_LARGE",
+          "UNSUPPORTED_MEDIA_TYPE",
+          "UNPROCESSABLE_ENTITY"
+        ],
+        "description": "Canonical Callora backend error code."
       }
     }
   }

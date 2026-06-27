@@ -4,6 +4,7 @@ import { createGatewayRouter } from "./gatewayRoutes.js";
 import { createRateLimiter } from "../services/rateLimiter.js";
 import { errorHandler } from "../middleware/errorHandler.js";
 import { requestIdMiddleware } from "../middleware/requestId.js";
+import type { ApiKey } from "../types/gateway.js";
 
 describe("gateway route - rate limiting", () => {
   let now = 0;
@@ -196,5 +197,159 @@ describe("gateway route - body size limits", () => {
     expect(res.headers["content-type"]).toMatch(/application\/json/);
     expect(res.body).toHaveProperty("code", "REQUEST_BODY_TOO_LARGE");
     expect(res.body).toHaveProperty("message", "Request body too large");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Bug #421 — prefix-exists-but-hash-mismatch must return 401, not 500
+// ---------------------------------------------------------------------------
+describe("gateway route - API key prefix / hash mismatch (bug #421)", () => {
+  /**
+   * Build a minimal app wired to a controlled apiKeys Map.
+   * Billing is set to fail fast (402) so we never attempt a real upstream
+   * request — we only care about the auth layer here.
+   */
+  function buildApp(apiKeys: Map<string, ApiKey>) {
+    const deps = {
+      billing: { deductCredit: async () => ({ success: false, balance: 0 }) },
+      rateLimiter: { check: async () => ({ allowed: true }) },
+      usageStore: { record: () => true },
+      upstreamUrl: "http://example.invalid",
+      apiKeys,
+    } as any;
+
+    const app = express();
+    app.use(requestIdMiddleware);
+    app.use("/gateway", createGatewayRouter(deps));
+    app.use(errorHandler);
+    return app;
+  }
+
+  const API_ID = "my-api";
+
+  /**
+   * Construct a key whose first 16 characters (the prefix) are identical to
+   * `validKey` but whose remaining characters differ — prefix matches but the
+   * SHA-256 hash of the full key will not match.
+   */
+  function buildMismatchedKey(validKey: string): string {
+    // Keep the same 16-char prefix, replace the rest so the hash diverges.
+    const prefix = validKey.slice(0, 16);
+    const differentSuffix = "X".repeat(validKey.length - 16);
+    return prefix + differentSuffix;
+  }
+
+  test("returns 401 (not 500) when prefix matches but hash mismatches", async () => {
+    const validKey = "test-key-abcdefgh"; // 17 chars; prefix = "test-key-abcdefg"
+    const apiKeys = new Map<string, ApiKey>();
+    apiKeys.set(validKey, { key: "k1", apiId: API_ID, developerId: "dev1" });
+
+    const app = buildApp(apiKeys);
+    const mismatchedKey = buildMismatchedKey(validKey);
+
+    const res = await request(app)
+      .get(`/gateway/${API_ID}`)
+      .set("x-api-key", mismatchedKey);
+
+    // Must be 401, never 500.
+    expect(res.status).toBe(401);
+    expect(res.body).toHaveProperty("code", "UNAUTHORIZED");
+    // Generic message — must not reveal whether the prefix was found.
+    expect(res.body.message).toMatch(/invalid API key/i);
+  });
+
+  test("returns 401 when prefix does not exist at all (no-prefix path)", async () => {
+    const validKey = "test-key-abcdefgh";
+    const apiKeys = new Map<string, ApiKey>();
+    apiKeys.set(validKey, { key: "k1", apiId: API_ID, developerId: "dev1" });
+
+    const app = buildApp(apiKeys);
+
+    // Completely different prefix — no candidate will be found.
+    const res = await request(app)
+      .get(`/gateway/${API_ID}`)
+      .set("x-api-key", "totally-unknown-key-xyz");
+
+    expect(res.status).toBe(401);
+    expect(res.body).toHaveProperty("code", "UNAUTHORIZED");
+    expect(res.body.message).toMatch(/invalid API key/i);
+  });
+
+  test("happy path — exact key match passes auth and reaches billing", async () => {
+    const validKey = "test-key-abcdefgh";
+    const apiKeys = new Map<string, ApiKey>();
+    apiKeys.set(validKey, { key: "k1", apiId: API_ID, developerId: "dev1" });
+
+    const app = buildApp(apiKeys);
+
+    // Billing is stubbed to fail (402) so we know auth succeeded.
+    const res = await request(app)
+      .get(`/gateway/${API_ID}`)
+      .set("x-api-key", validKey);
+
+    expect(res.status).toBe(402);
+    expect(res.status).not.toBe(401);
+    expect(res.status).not.toBe(500);
+  });
+
+  test("returns 401 when the matching key belongs to a different apiId", async () => {
+    const validKey = "test-key-abcdefgh";
+    const apiKeys = new Map<string, ApiKey>();
+    // Key is registered under "other-api", not "my-api".
+    apiKeys.set(validKey, { key: "k1", apiId: "other-api", developerId: "dev1" });
+
+    const app = buildApp(apiKeys);
+
+    const res = await request(app)
+      .get(`/gateway/${API_ID}`)
+      .set("x-api-key", validKey);
+
+    expect(res.status).toBe(401);
+    expect(res.body).toHaveProperty("code", "UNAUTHORIZED");
+  });
+
+  test("returns 403 when key is revoked (prefix + hash match a revoked key)", async () => {
+    const validKey = "test-key-abcdefgh";
+    const apiKeys = new Map<string, ApiKey>();
+    apiKeys.set(validKey, {
+      key: "k1",
+      apiId: API_ID,
+      developerId: "dev1",
+      revoked: true,
+    });
+
+    const app = buildApp(apiKeys);
+
+    const res = await request(app)
+      .get(`/gateway/${API_ID}`)
+      .set("x-api-key", validKey);
+
+    expect(res.status).toBe(403);
+    expect(res.body).toHaveProperty("code", "FORBIDDEN");
+  });
+
+  test("401 response body is identical for both mismatch and no-prefix cases (no timing oracle via body)", async () => {
+    const validKey = "test-key-abcdefgh";
+    const apiKeys = new Map<string, ApiKey>();
+    apiKeys.set(validKey, { key: "k1", apiId: API_ID, developerId: "dev1" });
+
+    const app = buildApp(apiKeys);
+
+    const [mismatchRes, unknownRes] = await Promise.all([
+      request(app)
+        .get(`/gateway/${API_ID}`)
+        .set("x-api-key", buildMismatchedKey(validKey)),
+      request(app)
+        .get(`/gateway/${API_ID}`)
+        .set("x-api-key", "totally-unknown-key-xyz"),
+    ]);
+
+    // Status codes must be identical.
+    expect(mismatchRes.status).toBe(401);
+    expect(unknownRes.status).toBe(401);
+
+    // Response codes must be identical — client must not be able to distinguish.
+    expect(mismatchRes.body.code).toBe(unknownRes.body.code);
+    expect(mismatchRes.body.message).toBe(unknownRes.body.message);
   });
 });

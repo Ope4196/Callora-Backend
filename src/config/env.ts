@@ -39,10 +39,14 @@ export const envSchema = z
     UPSTREAM_URL: z.string().url().default("http://localhost:4000"),
     UPSTREAM_HOST_ALLOWLIST: z.string().optional(),
     PROXY_TIMEOUT_MS: z.coerce.number().default(30_000),
+    PROXY_BREAKER_FAILURE_THRESHOLD: z.coerce.number().int().positive().default(5),
+    PROXY_BREAKER_COOLDOWN_MS: z.coerce.number().int().positive().default(30_000),
+    PROXY_BREAKER_SUCCESS_THRESHOLD: z.coerce.number().int().positive().default(1),
     REST_RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(60_000),
     REST_RATE_LIMIT_MAX_REQUESTS: z.coerce.number().int().positive().default(100),
     WEBHOOK_RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().optional(),
     WEBHOOK_RATE_LIMIT_MAX_REQUESTS: z.coerce.number().int().positive().optional(),
+    WEBHOOK_SECRET_ROTATION_GRACE_MS: z.coerce.number().int().positive().default(24 * 60 * 60 * 1000),
     // Generic rate limiter (optional legacy config)
     RATE_LIMIT_MAX_REQUESTS: z.coerce.number().int().positive().optional(),
     RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().optional(),
@@ -104,6 +108,8 @@ export const envSchema = z
 
     // Health check
     HEALTH_CHECK_DB_TIMEOUT: z.coerce.number().default(2_000),
+    APIS_CACHE_TTL_MS: z.coerce.number().int().positive().optional(),
+    LISTINGS_CACHE_WARMUP_TIMEOUT_MS: z.coerce.number().int().positive().default(5_000),
     APP_VERSION: z.string().default("1.0.0"),
 
     // Logging
@@ -124,8 +130,13 @@ export const envSchema = z
     // Security
     BCRYPT_COST_FACTOR: z.coerce.number().int().min(10).max(31).default(12),
 
+    // Billing concurrency control
+    BILLING_MAX_CONCURRENCY_PER_DEV: z.coerce.number().int().positive().default(1),
+    BILLING_SEMAPHORE_TTL_MS: z.coerce.number().int().positive().default(300000),
+
     // Idempotency
     IDEMPOTENCY_RETENTION_WINDOW_SECONDS: z.coerce.number().int().positive().default(86400),
+    IDEMPOTENCY_SWEEPER_INTERVAL_MS: z.coerce.number().int().positive().default(60_000),
   })
   .superRefine((values, ctx) => {
     if (values.SOROBAN_RPC_ENABLED && !values.SOROBAN_RPC_URL) {

@@ -1,6 +1,7 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import type { NextFunction, Request, RequestHandler } from 'express';
 import { ForbiddenError, NotFoundError, UnauthorizedError } from '../errors/index.js';
+import { recordApiKeyLookup } from '../metrics.js';
 
 export const API_KEY_PREFIX_LENGTH = 16;
 
@@ -15,6 +16,7 @@ export interface GatewayApiKeyRecord {
   rateLimitPerMinute?: number | null;
   createdAt?: Date | string;
   lastUsedAt?: Date | string | null;
+  tier?: string;
 }
 
 export interface GatewayAuthCandidate<
@@ -43,6 +45,10 @@ export interface GatewayApiKeyAuthOptions<
   getApiKeyCandidates(prefix: string, req: Request): Promise<GatewayAuthCandidate<TUser, TVault>[]>;
   resolveApiContext(req: Request): Promise<GatewayResolvedContext<TApi, TEndpoint> | null> | GatewayResolvedContext<TApi, TEndpoint> | null;
   getApiId(api: TApi): string;
+  /** If set, the middleware rejects keys that do not include this scope.
+   *  Keys with scopes containing '*' are always allowed.
+   *  Keys with empty/null scopes default to ['read']. */
+  requiredScope?: string;
   onUnauthorized?: (next: NextFunction, message: string) => void;
   onNotFound?: (next: NextFunction, message: string) => void;
 }
@@ -58,6 +64,8 @@ export interface InMemoryGatewayApiKey {
   developerId: string;
   apiId: string;
   revoked?: boolean;
+  scopes?: string[];
+  tier?: string;
 }
 
 export interface GatewayAuthQueryable {
@@ -75,6 +83,7 @@ export interface DatabaseGatewayApiKeyRow {
   rate_limit_per_minute: number | null;
   created_at: string | Date | null;
   last_used_at: string | Date | null;
+  plan_tier: string | null;
   user: Record<string, unknown> | null;
   vault: Record<string, unknown> | null;
 }
@@ -170,12 +179,15 @@ export function createGatewayApiKeyAuthMiddleware<
   return async (req, res, next) => {
     const extracted = extractApiKey(req);
     if (!extracted.apiKey) {
+      // No key was provided or the header format was invalid
+      recordApiKeyLookup('miss');
       handleUnauthorized(next, extracted.error ?? 'Unauthorized: missing API key');
       return;
     }
 
     const resolvedContext = await options.resolveApiContext(req);
     if (!resolvedContext) {
+      recordApiKeyLookup('miss');
       handleNotFound(next, 'Not Found: unknown API');
       return;
     }
@@ -183,6 +195,7 @@ export function createGatewayApiKeyAuthMiddleware<
     const prefix = extracted.apiKey.slice(0, API_KEY_PREFIX_LENGTH);
     const candidates = await options.getApiKeyCandidates(prefix, req);
     if (candidates.length === 0) {
+      recordApiKeyLookup('miss');
       handleUnauthorized(next, 'Unauthorized: API key not found');
       return;
     }
@@ -196,23 +209,47 @@ export function createGatewayApiKeyAuthMiddleware<
     }
 
     if (!matchedCandidate) {
+      recordApiKeyLookup('miss');
       handleUnauthorized(next, 'Unauthorized: invalid API key');
       return;
     }
 
     if (matchedCandidate.apiKeyRecord.revoked) {
+      // The key exists but was explicitly revoked by the developer
+      recordApiKeyLookup('revoked');
       handleForbidden(next, 'Unauthorized: API key has been revoked');
       return;
     }
 
+    if (matchedCandidate.apiKeyRecord.expiresAt) {
+      const expiresAt = new Date(matchedCandidate.apiKeyRecord.expiresAt);
+      if (expiresAt.getTime() < Date.now()) {
+        // The key exists but its expiration timestamp has passed
+        recordApiKeyLookup('expired');
+        handleUnauthorized(next, 'Unauthorized: API key has expired');
+        return;
+      }
+    }
+
     if (!matchedCandidate.user || matchedCandidate.vault === undefined) {
+      recordApiKeyLookup('miss');
       handleUnauthorized(next, 'Unauthorized: API key context is incomplete');
       return;
     }
 
     if (String(matchedCandidate.apiKeyRecord.apiId) !== options.getApiId(resolvedContext.api)) {
+      recordApiKeyLookup('miss');
       handleUnauthorized(next, 'Unauthorized: API key does not grant access to this API');
       return;
+    }
+
+    if (options.requiredScope) {
+      const keyScopes = matchedCandidate.apiKeyRecord.scopes ?? [];
+      const effectiveScopes = keyScopes.length === 0 ? ['read'] : keyScopes;
+      if (!effectiveScopes.includes('*') && !effectiveScopes.includes(options.requiredScope)) {
+        handleForbidden(next, 'Forbidden: API key lacks required scope');
+        return;
+      }
     }
 
     req.apiKeyValue = extracted.apiKey;
@@ -221,6 +258,9 @@ export function createGatewayApiKeyAuthMiddleware<
     req.vault = matchedCandidate.vault as Record<string, unknown> | null;
     req.api = resolvedContext.api as Record<string, unknown>;
     req.endpoint = resolvedContext.endpoint as Record<string, unknown>;
+
+    res.locals = res.locals || {};
+    res.locals.apiKeyTier = matchedCandidate.apiKeyRecord.tier;
 
     next();
   };
@@ -249,6 +289,8 @@ export function createMapBackedGatewayApiKeyAuthMiddleware<
             prefix: rawKey.slice(0, API_KEY_PREFIX_LENGTH),
             keyHash: sha256Hex(rawKey),
             revoked: record.revoked ?? false,
+            scopes: record.scopes,
+            tier: record.tier,
           },
           user: { id: record.developerId },
           vault: null,
@@ -287,6 +329,7 @@ export function createDatabaseGatewayApiKeyAuthMiddleware<
             ak.rate_limit_per_minute,
             ak.created_at,
             ak.last_used_at,
+            ak.plan_tier,
             row_to_json(u) AS "user",
             row_to_json(v) AS vault
           FROM api_keys ak
@@ -318,6 +361,7 @@ export function createDatabaseGatewayApiKeyAuthMiddleware<
           rateLimitPerMinute: row.rate_limit_per_minute,
           createdAt: row.created_at ?? undefined,
           lastUsedAt: row.last_used_at ?? undefined,
+          tier: row.plan_tier ?? undefined,
         },
         user: row.user ?? {},
         vault: row.vault,

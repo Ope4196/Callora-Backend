@@ -30,7 +30,7 @@ Used when API usage is recorded for a developer.
 
 ### `settlement_completed`
 
-Used when a developer settlement completes successfully.
+Used when a developer settlement completes successfully. Emitted by `RevenueSettlementService` only after settlement status and usage events are committed to the database.
 
 ```ts
 {

@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
-import { parsePagination, paginatedResponse } from '../pagination';
-import { ValidationError } from '../../middleware/validate';
+import { parsePagination, paginatedResponse } from '../pagination.js';
+import { ValidationError } from '../../middleware/validate.js';
 
 function assertValidationError(fn: () => unknown, field: string) {
-  assert.throws(fn, (err) => {
+  assert.throws(fn, (err: unknown) => {
     assert.ok(err instanceof ValidationError, `expected ValidationError, got ${err}`);
     assert.ok(
-      err.details.some((d) => d.field === field),
+      err.details.some((d: { field: string }) => d.field === field),
       `expected field "${field}" in details: ${JSON.stringify(err.details)}`,
     );
     return true;
@@ -78,6 +78,18 @@ describe('parsePagination', () => {
 
   it('rejects floating-point limit', () => {
     assertValidationError(() => parsePagination({ limit: '10.7' }), 'query.limit');
+  });
+
+  it('rejects fractional limit even when the fractional part is zero', () => {
+    assertValidationError(() => parsePagination({ limit: '10.0' }), 'query.limit');
+  });
+
+  it('rejects scientific notation for limit', () => {
+    assertValidationError(() => parsePagination({ limit: '1e2' }), 'query.limit');
+  });
+
+  it('rejects hexadecimal notation for limit', () => {
+    assertValidationError(() => parsePagination({ limit: '0x10' }), 'query.limit');
   });
 
   it('rejects floating-point offset', () => {

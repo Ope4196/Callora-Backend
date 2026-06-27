@@ -13,6 +13,12 @@ export interface CreateUsageEventInput {
   apiId: string;
   endpointId: string;
   apiKeyId: string;
+  /**
+   * Partition key for the hash-partitioned usage_events table.
+   * Should be set to the owning developer's ID on every insert.
+   * Defaults to '' for backward compatibility but callers should supply this.
+   */
+  developerId?: string;
   amount: bigint;
   requestId: string;
   stellarTxHash?: string | null;
@@ -25,6 +31,7 @@ export interface BillingUsageEvent {
   apiId: string;
   endpointId: string;
   apiKeyId: string;
+  developerId: string;
   amount: bigint;
   requestId: string;
   stellarTxHash: string | null;
@@ -34,7 +41,6 @@ export interface BillingUsageEvent {
 export interface RevenueLedgerUsageEvent {
   usageEventId: string;
   apiId: string;
-  developerId: string;
   amount: bigint;
   createdAt: Date;
 }
@@ -46,7 +52,7 @@ export interface UsageEventsPgRepository {
   getTotalSpentByUser(userId: string, from?: Date, to?: Date): Promise<bigint>;
   getTotalRevenueByApi(apiId: string, from?: Date, to?: Date): Promise<bigint>;
   findUnindexedRevenueLedgerEvents(cursor?: string, limit?: number): Promise<RevenueLedgerUsageEvent[]>;
-  indexRevenueLedgerEvent(event: RevenueLedgerUsageEvent): Promise<boolean>;
+  indexRevenueLedgerEvent(event: RevenueLedgerUsageEvent, developerId: string): Promise<boolean>;
 }
 
 export interface UsageEventsRepositoryQueryable {
@@ -59,6 +65,7 @@ interface UsageEventRow {
   api_id: string;
   endpoint_id: string;
   api_key_id: string;
+  developer_id: string;
   amount_usdc: string | number | bigint;
   request_id: string;
   stellar_tx_hash: string | null;
@@ -73,7 +80,6 @@ interface TotalRow {
 interface RevenueLedgerUsageEventRow {
   usage_event_id: string | number | bigint;
   api_id: string;
-  developer_id: string;
   amount_usdc: string | number | bigint;
   created_at: Date | string;
 }
@@ -172,6 +178,7 @@ const mapUsageEventRow = (row: UsageEventRow): BillingUsageEvent => ({
   apiId: row.api_id,
   endpointId: row.endpoint_id,
   apiKeyId: row.api_key_id,
+  developerId: row.developer_id,
   amount: toBigInt(row.amount_usdc, 'amount_usdc'),
   requestId: row.request_id,
   stellarTxHash: row.stellar_tx_hash,
@@ -183,7 +190,6 @@ const mapRevenueLedgerUsageEventRow = (
 ): RevenueLedgerUsageEvent => ({
   usageEventId: String(row.usage_event_id),
   apiId: row.api_id,
-  developerId: row.developer_id,
   amount: toBigInt(row.amount_usdc, 'amount_usdc'),
   createdAt: row.created_at instanceof Date ? row.created_at : new Date(row.created_at),
 });
@@ -208,6 +214,7 @@ export class PgUsageEventsRepository implements UsageEventsPgRepository {
     const apiId = assertNonEmpty(event.apiId, 'apiId');
     const endpointId = assertNonEmpty(event.endpointId, 'endpointId');
     const apiKeyId = assertNonEmpty(event.apiKeyId, 'apiKeyId');
+    const developerId = (event.developerId ?? '').trim();
     const requestId = assertNonEmpty(event.requestId, 'requestId');
     const amount = assertAmount(event.amount).toString();
 
@@ -218,13 +225,14 @@ export class PgUsageEventsRepository implements UsageEventsPgRepository {
         api_id,
         endpoint_id,
         api_key_id,
+        developer_id,
         amount_usdc,
         request_id,
         stellar_tx_hash,
         created_at
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8, NOW()))
-      ON CONFLICT (request_id)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, COALESCE($9, NOW()))
+      ON CONFLICT (request_id, developer_id)
       DO UPDATE SET request_id = EXCLUDED.request_id
       RETURNING
         id,
@@ -232,6 +240,7 @@ export class PgUsageEventsRepository implements UsageEventsPgRepository {
         api_id,
         endpoint_id,
         api_key_id,
+        developer_id,
         amount_usdc,
         request_id,
         stellar_tx_hash,
@@ -242,6 +251,7 @@ export class PgUsageEventsRepository implements UsageEventsPgRepository {
         apiId,
         endpointId,
         apiKeyId,
+        developerId,
         amount,
         requestId,
         event.stellarTxHash ?? null,
@@ -343,12 +353,9 @@ export class PgUsageEventsRepository implements UsageEventsPgRepository {
         SELECT
           ue.id AS usage_event_id,
           ue.api_id,
-          a.developer_id,
           ue.amount_usdc,
           ue.created_at
         FROM usage_events ue
-        INNER JOIN apis a
-          ON a.id = ue.api_id
         LEFT JOIN revenue_ledger rl
           ON rl.usage_event_id = ue.id
         WHERE ue.id > $1
@@ -362,7 +369,7 @@ export class PgUsageEventsRepository implements UsageEventsPgRepository {
     return result.rows.map(mapRevenueLedgerUsageEventRow);
   }
 
-  async indexRevenueLedgerEvent(event: RevenueLedgerUsageEvent): Promise<boolean> {
+  async indexRevenueLedgerEvent(event: RevenueLedgerUsageEvent, developerId: string): Promise<boolean> {
     const result = await this.db.query<{ inserted: number }>(
       `
         INSERT INTO revenue_ledger (
@@ -383,7 +390,7 @@ export class PgUsageEventsRepository implements UsageEventsPgRepository {
       `,
       [
         assertNonEmpty(event.apiId, 'apiId'),
-        assertNonEmpty(event.developerId, 'developerId'),
+        assertNonEmpty(developerId, 'developerId'),
         assertAmount(event.amount).toString(),
         normalizeCursor(event.usageEventId) ?? '0',
         event.createdAt,
@@ -425,6 +432,7 @@ export class PgUsageEventsRepository implements UsageEventsPgRepository {
         api_id,
         endpoint_id,
         api_key_id,
+        developer_id,
         amount_usdc,
         request_id,
         stellar_tx_hash,

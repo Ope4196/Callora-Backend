@@ -1,3 +1,5 @@
+import { eq } from 'drizzle-orm';
+import { db, schema } from '../db/index.js';
 import type {
   RevenueLedgerUsageEvent,
   UsageEventsPgRepository,
@@ -6,6 +8,7 @@ import type {
 export interface RevenueLedgerIndexerOptions {
   batchSize?: number;
   logger?: Pick<typeof console, 'error'>;
+  resolveDeveloperId?: (apiId: string) => Promise<string | undefined>;
 }
 
 export interface RevenueLedgerIndexerRunResult {
@@ -16,6 +19,7 @@ export interface RevenueLedgerIndexerRunResult {
 export class RevenueLedgerIndexer {
   private readonly batchSize: number;
   private readonly logger: Pick<typeof console, 'error'>;
+  private readonly resolveDeveloperId: (apiId: string) => Promise<string | undefined>;
   private runTail: Promise<void> = Promise.resolve();
 
   constructor(
@@ -28,6 +32,14 @@ export class RevenueLedgerIndexer {
     }
 
     this.logger = options.logger ?? console;
+    this.resolveDeveloperId = options.resolveDeveloperId ?? (async (apiId: string) => {
+      const apiResult = await db
+        .select({ developer_id: schema.apis.developer_id })
+        .from(schema.apis)
+        .where(eq(schema.apis.id, Number(apiId)))
+        .limit(1);
+      return apiResult[0]?.developer_id?.toString();
+    });
   }
 
   async runOnce(): Promise<RevenueLedgerIndexerRunResult> {
@@ -75,7 +87,14 @@ export class RevenueLedgerIndexer {
 
   private async insertEvent(event: RevenueLedgerUsageEvent): Promise<number> {
     try {
-      return (await this.usageEventsRepository.indexRevenueLedgerEvent(event)) ? 1 : 0;
+      const developerId = await this.resolveDeveloperId(event.apiId);
+
+      if (!developerId) {
+        this.logger.error('Revenue ledger indexing failed: API or developer not found', { apiId: event.apiId });
+        return 0;
+      }
+
+      return (await this.usageEventsRepository.indexRevenueLedgerEvent(event, developerId)) ? 1 : 0;
     } catch (error) {
       this.logger.error('Revenue ledger indexing failed for usage event', {
         usageEventId: event.usageEventId,

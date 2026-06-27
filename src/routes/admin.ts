@@ -27,6 +27,7 @@ router.get('/users', async (req, res, next) => {
     const diff: Record<string, unknown> = {
       query: { ...req.query },
     };
+    // Include request body for state-changing methods
     if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method) && req.body && typeof req.body === 'object') {
       diff.body = req.body;
     }

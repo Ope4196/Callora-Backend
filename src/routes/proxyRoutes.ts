@@ -2,7 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { randomUUID } from 'node:crypto';
 import { ProxyDeps, ProxyConfig, ApiRegistryEntry, EndpointPricing } from '../types/gateway.js';
 import { resolveEndpointPrice } from '../data/apiRegistry.js';
-import { startUpstreamTimer, type UpstreamOutcome } from '../metrics.js';
+import { startUpstreamTimer, recordProxyPrematureAbort, type UpstreamOutcome, setGatewayUpstreamBreakerState } from '../metrics.js';
 import { createMapBackedGatewayApiKeyAuthMiddleware } from '../middleware/gatewayApiKeyAuth.js';
 import { buildHopByHopSet } from '../lib/hopByHop.js';
 import {
@@ -17,6 +17,9 @@ import {
   PaymentRequiredError,
   TooManyRequestsError,
 } from '../errors/index.js';
+import { CircuitBreakerOpenError } from '../lib/errors.js';
+import { CircuitBreaker, type CircuitBreakerStore } from '../lib/circuitBreaker.js';
+import { env } from '../config/env.js';
 
 /**
  * Headers that must never be forwarded to the upstream server.
@@ -73,9 +76,14 @@ function resolveConfig(partial?: Partial<ProxyConfig>): ProxyConfig {
  *   8. [Non-blocking] Record usage and deduct billing if status is recordable
  */
 export function createProxyRouter(deps: ProxyDeps): Router {
-  const { billing, rateLimiter, usageStore, registry } = deps;
+  const { billing, rateLimiter, usageStore, registry, circuitBreakerStore } = deps;
   const config = resolveConfig(deps.proxyConfig);
   const router = Router();
+  const circuitBreaker = new CircuitBreaker({
+    failureThreshold: env.PROXY_BREAKER_FAILURE_THRESHOLD,
+    cooldownMs: env.PROXY_BREAKER_COOLDOWN_MS,
+    successThreshold: env.PROXY_BREAKER_SUCCESS_THRESHOLD,
+  }, circuitBreakerStore);
   const authMiddleware = deps.authMiddleware ?? createMapBackedGatewayApiKeyAuthMiddleware({
     apiKeys: deps.apiKeys,
     resolveApiContext(req) {
@@ -116,8 +124,15 @@ export function createProxyRouter(deps: ProxyDeps): Router {
         return;
       }
 
+      const breakerKey = String(apiEntry.id);
+
+      // Update circuit breaker state metric
+      const currentMetrics = await circuitBreaker.getMetrics(breakerKey);
+      const stateValue = currentMetrics.state === 'CLOSED' ? 0 : currentMetrics.state === 'OPEN' ? 1 : 2;
+      setGatewayUpstreamBreakerState(breakerKey, stateValue);
+
       // 3. Rate-limit check
-      const rateResult = await rateLimiter.check(apiKeyHeader);
+      const rateResult = await rateLimiter.check(apiKeyHeader, res.locals.apiKeyTier as string | undefined);
       if (!rateResult.allowed) {
         const retryAfterSec = Math.ceil((rateResult.retryAfterMs ?? 1000) / 1000);
         res.set('Retry-After', String(retryAfterSec));
@@ -167,20 +182,28 @@ export function createProxyRouter(deps: ProxyDeps): Router {
       }
       forwardHeaders['x-request-id'] = requestId;
 
-      // 7. Proxy with timeout
+      // 7. Proxy with circuit breaker and timeout
       let upstreamStatus = 502;
       const timer = startUpstreamTimer(apiEntry.id, req.method);
 
       try {
-        const upstreamRes = await fetch(safeUpstreamTarget, {
-          method: req.method,
-          headers: forwardHeaders,
-          body: ['GET', 'HEAD'].includes(req.method) ? undefined : JSON.stringify(req.body),
-          signal: AbortSignal.timeout(config.timeoutMs),
+        const upstreamRes = await circuitBreaker.execute(breakerKey, async () => {
+          const res = await fetch(safeUpstreamTarget, {
+            method: req.method,
+            headers: forwardHeaders,
+            body: ['GET', 'HEAD'].includes(req.method) ? undefined : JSON.stringify(req.body),
+            signal: AbortSignal.timeout(config.timeoutMs),
+          });
+          return res;
         });
 
         upstreamStatus = upstreamRes.status;
         timer.stop(upstreamStatus, 'success');
+
+        // Update circuit breaker state metric after success
+        const updatedMetrics = await circuitBreaker.getMetrics(breakerKey);
+        const updatedStateValue = updatedMetrics.state === 'CLOSED' ? 0 : updatedMetrics.state === 'OPEN' ? 1 : 2;
+        setGatewayUpstreamBreakerState(breakerKey, updatedStateValue);
 
         // Forward response headers — strip hop-by-hop headers from the upstream
         // response, including any names listed in the upstream Connection header.
@@ -213,51 +236,106 @@ export function createProxyRouter(deps: ProxyDeps): Router {
       } catch (err: unknown) {
         let outcome: UpstreamOutcome = 'error';
 
-        if (err instanceof DOMException && err.name === 'TimeoutError') {
+        if (err instanceof CircuitBreakerOpenError) {
+          // Circuit breaker open — don't bill the caller
+          upstreamStatus = 502;
+          timer.stop(upstreamStatus, outcome);
+          // Update metric
+          const openMetrics = await circuitBreaker.getMetrics(breakerKey);
+          setGatewayUpstreamBreakerState(breakerKey, 1);
+          throw new BadGatewayError('Bad Gateway: upstream unavailable');
+        } else if (err instanceof DOMException && err.name === 'TimeoutError') {
           upstreamStatus = 504;
           outcome = 'timeout';
           timer.stop(upstreamStatus, outcome);
+          // Update metric after failure
+          const failedMetrics = await circuitBreaker.getMetrics(breakerKey);
+          const failedStateValue = failedMetrics.state === 'CLOSED' ? 0 : failedMetrics.state === 'OPEN' ? 1 : 2;
+          setGatewayUpstreamBreakerState(breakerKey, failedStateValue);
           throw new GatewayTimeoutError('Upstream service timed out');
         } else if (err instanceof TypeError && (err as NodeJS.ErrnoException).code === 'UND_ERR_CONNECT_TIMEOUT') {
           upstreamStatus = 504;
           outcome = 'timeout';
           timer.stop(upstreamStatus, outcome);
+          // Update metric after failure
+          const failedMetrics = await circuitBreaker.getMetrics(breakerKey);
+          const failedStateValue = failedMetrics.state === 'CLOSED' ? 0 : failedMetrics.state === 'OPEN' ? 1 : 2;
+          setGatewayUpstreamBreakerState(breakerKey, failedStateValue);
           throw new GatewayTimeoutError('Upstream service timed out');
         } else {
           upstreamStatus = 502;
           timer.stop(upstreamStatus, outcome);
+          // Update metric after failure
+          const failedMetrics = await circuitBreaker.getMetrics(breakerKey);
+          const failedStateValue = failedMetrics.state === 'CLOSED' ? 0 : failedMetrics.state === 'OPEN' ? 1 : 2;
+          setGatewayUpstreamBreakerState(breakerKey, failedStateValue);
           throw new BadGatewayError('Bad Gateway: upstream unreachable');
         }
       }
 
-      // 8. Keep metering and billing consistent after a recordable response.
+      // 8. Keep metering and billing consistent — but ONLY after the response
+      //    has been fully delivered to the caller.
+      //
+      //    We distinguish two response lifecycle events:
+      //      • 'finish' — Node/Express has flushed all data and ended the
+      //                   response normally.  This is the success path; we
+      //                   record usage here.
+      //      • 'close'  — The underlying socket was torn down.  When this
+      //                   fires WITHOUT a prior 'finish' it means the client
+      //                   disconnected mid-stream (premature abort).  In that
+      //                   case we must NOT record usage because the caller
+      //                   never received the response.
+      //
+      //    Using a one-shot 'finish' listener (registered before we start
+      //    streaming) ensures we capture the event even if the stream
+      //    completes synchronously.  The 'close' listener is a guard that
+      //    cancels the deferred work when the socket drops first.
       if (config.recordableStatuses(upstreamStatus)) {
-        setImmediate(() => {
-          void (async () => {
-            try {
-              const recorded = await usageStore.record({
-                id: randomUUID(), // ID of the usage event itself
-                requestId,        // Idempotency key
-                apiKey: apiKeyHeader,
-                apiKeyId: keyRecord.id,
-                apiId: String(apiEntry.id),
-                endpointId: endpoint.endpointId,
-                userId: keyRecord.userId,
-                amountUsdc: endpoint.priceUsdc,
-                statusCode: upstreamStatus,
-                timestamp: new Date().toISOString(),
-              });
+        // Track whether the response finished cleanly before the socket closed.
+        let responseFinished = false;
 
-              // Only deduct billing if we haven't processed this requestId before
-              if (recorded && endpoint.priceUsdc > 0) {
-                billing.deductCredit(keyRecord.userId, endpoint.priceUsdc).catch((err) => {
-                  console.error('Background billing deduction failed:', err);
+        res.once('finish', () => {
+          responseFinished = true;
+
+          // Run usage recording in a non-blocking microtask so it does not
+          // delay the event loop that is already handling the next request.
+          setImmediate(() => {
+            void (async () => {
+              try {
+                const recorded = await usageStore.record({
+                  id: randomUUID(), // ID of the usage event itself
+                  requestId,        // Idempotency key — prevents double-counts
+                  apiKey: apiKeyHeader,
+                  apiKeyId: keyRecord.id,
+                  apiId: String(apiEntry.id),
+                  endpointId: endpoint.endpointId,
+                  userId: keyRecord.userId,
+                  amountUsdc: endpoint.priceUsdc,
+                  statusCode: upstreamStatus,
+                  timestamp: new Date().toISOString(),
                 });
+
+                // Only deduct billing if this requestId hasn't been processed
+                // before (idempotency guard inside usageStore.record).
+                if (recorded && endpoint.priceUsdc > 0) {
+                  billing.deductCredit(keyRecord.userId, endpoint.priceUsdc).catch((err) => {
+                    console.error('Background billing deduction failed:', err);
+                  });
+                }
+              } catch (err) {
+                console.error('Background usage recording failed:', err);
               }
-            } catch (err) {
-              console.error('Background usage recording failed:', err);
-            }
-          })();
+            })();
+          });
+        });
+
+        res.once('close', () => {
+          // 'close' fires after 'finish' on a normal response, or on its own
+          // when the socket is destroyed prematurely.  Only treat it as an
+          // abort when 'finish' has NOT already fired.
+          if (!responseFinished) {
+            recordProxyPrematureAbort();
+          }
         });
       }
     } catch (error) {

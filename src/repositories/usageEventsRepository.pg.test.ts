@@ -22,15 +22,12 @@ function createUsageEventsRepository() {
       api_id VARCHAR(255) NOT NULL,
       endpoint_id VARCHAR(255) NOT NULL,
       api_key_id VARCHAR(255) NOT NULL,
+      developer_id VARCHAR(255) NOT NULL DEFAULT '',
       amount_usdc NUMERIC(20, 0) NOT NULL,
-      request_id VARCHAR(255) NOT NULL UNIQUE,
+      request_id VARCHAR(255) NOT NULL,
       stellar_tx_hash VARCHAR(64),
-      created_at TIMESTAMP NOT NULL DEFAULT NOW()
-    );
-
-    CREATE TABLE apis (
-      id VARCHAR(255) PRIMARY KEY,
-      developer_id VARCHAR(255) NOT NULL
+      created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+      UNIQUE (request_id, developer_id)
     );
 
     CREATE TABLE revenue_ledger (
@@ -65,6 +62,7 @@ test('create stores a usage event and returns the persisted record', async () =>
       apiId: 'api-weather',
       endpointId: 'endpoint-current',
       apiKeyId: 'key-1',
+      developerId: 'dev-1',
       amount: 1250n,
       requestId: 'req-1',
       stellarTxHash: 'stellar-hash-1',
@@ -76,6 +74,7 @@ test('create stores a usage event and returns the persisted record', async () =>
     assert.equal(event.apiId, 'api-weather');
     assert.equal(event.endpointId, 'endpoint-current');
     assert.equal(event.apiKeyId, 'key-1');
+    assert.equal(event.developerId, 'dev-1');
     assert.equal(event.amount, 1250n);
     assert.equal(event.requestId, 'req-1');
     assert.equal(event.stellarTxHash, 'stellar-hash-1');
@@ -94,6 +93,7 @@ test('create is idempotent on requestId and returns the existing row on conflict
       apiId: 'api-weather',
       endpointId: 'endpoint-current',
       apiKeyId: 'key-1',
+      developerId: 'dev-1',
       amount: 1250n,
       requestId: 'req-duplicate',
       stellarTxHash: 'stellar-hash-1',
@@ -105,6 +105,7 @@ test('create is idempotent on requestId and returns the existing row on conflict
       apiId: 'api-other',
       endpointId: 'endpoint-other',
       apiKeyId: 'key-2',
+      developerId: 'dev-1',
       amount: 9999n,
       requestId: 'req-duplicate',
       stellarTxHash: 'stellar-hash-2',
@@ -130,6 +131,7 @@ test('create uses the database default timestamp when createdAt is omitted', asy
       apiId: 'api-weather',
       endpointId: 'endpoint-current',
       apiKeyId: 'key-1',
+      developerId: 'dev-1',
       amount: 500n,
       requestId: 'req-default-time',
     });
@@ -153,6 +155,7 @@ test('findByUserId filters by time range, sorts newest first, and honors limit',
       apiId: 'api-weather',
       endpointId: 'endpoint-1',
       apiKeyId: 'key-1',
+      developerId: 'dev-1',
       amount: 100n,
       requestId: 'req-u-1',
       createdAt: new Date('2026-02-01T10:00:00.000Z'),
@@ -162,6 +165,7 @@ test('findByUserId filters by time range, sorts newest first, and honors limit',
       apiId: 'api-chat',
       endpointId: 'endpoint-2',
       apiKeyId: 'key-1',
+      developerId: 'dev-1',
       amount: 200n,
       requestId: 'req-u-2',
       createdAt: new Date('2026-02-02T10:00:00.000Z'),
@@ -171,6 +175,7 @@ test('findByUserId filters by time range, sorts newest first, and honors limit',
       apiId: 'api-chat',
       endpointId: 'endpoint-3',
       apiKeyId: 'key-1',
+      developerId: 'dev-1',
       amount: 300n,
       requestId: 'req-u-3',
       createdAt: new Date('2026-02-03T10:00:00.000Z'),
@@ -180,6 +185,7 @@ test('findByUserId filters by time range, sorts newest first, and honors limit',
       apiId: 'api-chat',
       endpointId: 'endpoint-4',
       apiKeyId: 'key-2',
+      developerId: 'dev-1',
       amount: 400n,
       requestId: 'req-u-4',
       createdAt: new Date('2026-02-04T10:00:00.000Z'),
@@ -216,6 +222,7 @@ test('findByApiId filters by time range and returns an empty list for limit 0', 
       apiId: 'api-weather',
       endpointId: 'endpoint-1',
       apiKeyId: 'key-1',
+      developerId: 'dev-1',
       amount: 100n,
       requestId: 'req-a-1',
       createdAt: new Date('2026-02-01T10:00:00.000Z'),
@@ -225,6 +232,7 @@ test('findByApiId filters by time range and returns an empty list for limit 0', 
       apiId: 'api-weather',
       endpointId: 'endpoint-2',
       apiKeyId: 'key-2',
+      developerId: 'dev-1',
       amount: 150n,
       requestId: 'req-a-2',
       createdAt: new Date('2026-02-02T10:00:00.000Z'),
@@ -234,6 +242,7 @@ test('findByApiId filters by time range and returns an empty list for limit 0', 
       apiId: 'api-chat',
       endpointId: 'endpoint-3',
       apiKeyId: 'key-3',
+      developerId: 'dev-1',
       amount: 999n,
       requestId: 'req-a-3',
       createdAt: new Date('2026-02-03T10:00:00.000Z'),
@@ -264,6 +273,7 @@ test('aggregate helpers sum the smallest-unit amounts and return 0 when no rows 
       apiId: 'api-weather',
       endpointId: 'endpoint-1',
       apiKeyId: 'key-1',
+      developerId: 'dev-1',
       amount: 100n,
       requestId: 'req-s-1',
       createdAt: new Date('2026-02-01T10:00:00.000Z'),
@@ -273,6 +283,7 @@ test('aggregate helpers sum the smallest-unit amounts and return 0 when no rows 
       apiId: 'api-weather',
       endpointId: 'endpoint-2',
       apiKeyId: 'key-1',
+      developerId: 'dev-1',
       amount: 150n,
       requestId: 'req-s-2',
       createdAt: new Date('2026-02-02T10:00:00.000Z'),
@@ -282,6 +293,7 @@ test('aggregate helpers sum the smallest-unit amounts and return 0 when no rows 
       apiId: 'api-weather',
       endpointId: 'endpoint-3',
       apiKeyId: 'key-2',
+      developerId: 'dev-1',
       amount: 700n,
       requestId: 'req-s-3',
       createdAt: new Date('2026-02-03T10:00:00.000Z'),
@@ -317,6 +329,7 @@ test('repository validates blank identifiers, invalid ranges, negative amounts, 
         apiId: 'api-weather',
         endpointId: 'endpoint-1',
         apiKeyId: 'key-1',
+        developerId: 'dev-1',
         amount: 100n,
         requestId: 'req-invalid-user',
       }),
@@ -329,6 +342,7 @@ test('repository validates blank identifiers, invalid ranges, negative amounts, 
         apiId: 'api-weather',
         endpointId: 'endpoint-1',
         apiKeyId: 'key-1',
+        developerId: 'dev-1',
         amount: -1n,
         requestId: 'req-negative-amount',
       }),
@@ -377,6 +391,7 @@ test('findByUserId without a limit returns every matching event in descending or
       apiId: 'api-weather',
       endpointId: 'endpoint-1',
       apiKeyId: 'key-1',
+      developerId: 'dev-1',
       amount: 100n,
       requestId: 'req-nolimit-1',
       createdAt: new Date('2026-02-01T10:00:00.000Z'),
@@ -386,6 +401,7 @@ test('findByUserId without a limit returns every matching event in descending or
       apiId: 'api-weather',
       endpointId: 'endpoint-2',
       apiKeyId: 'key-1',
+      developerId: 'dev-1',
       amount: 200n,
       requestId: 'req-nolimit-2',
       createdAt: new Date('2026-02-02T10:00:00.000Z'),
@@ -413,6 +429,7 @@ test('repository surfaces malformed amount values from the database', async () =
             api_id: 'api-weather',
             endpoint_id: 'endpoint-1',
             api_key_id: 'key-1',
+            developer_id: 'dev-1',
             amount_usdc: 1.5,
             request_id: 'req-bad-number',
             stellar_tx_hash: null,
@@ -433,6 +450,7 @@ test('repository surfaces malformed amount values from the database', async () =
             api_id: 'api-weather',
             endpoint_id: 'endpoint-1',
             api_key_id: 'key-1',
+            developer_id: 'dev-1',
             amount_usdc: '1.5',
             request_id: 'req-bad-string',
             stellar_tx_hash: null,
@@ -465,6 +483,7 @@ test('repository accepts bigint values returned directly from the database drive
             api_id: 'api-weather',
             endpoint_id: 'endpoint-1',
             api_key_id: 'key-1',
+            developer_id: 'dev-1',
             amount_usdc: 450n,
             request_id: 'req-bigint-row',
             stellar_tx_hash: null,
@@ -485,16 +504,14 @@ test('findUnindexedRevenueLedgerEvents resolves developer ownership from apis an
   const { repository, pool } = createUsageEventsRepository();
 
   try {
-    await pool.query(
-      'INSERT INTO apis (id, developer_id) VALUES ($1, $2), ($3, $4)',
-      ['api-weather', 'dev-weather', 'api-chat', 'dev-chat'],
-    );
+    // No apis table in Postgres anymore
 
     await repository.create({
       userId: 'consumer-1',
       apiId: 'api-weather',
       endpointId: 'endpoint-1',
       apiKeyId: 'key-1',
+      developerId: 'dev-1',
       amount: 100n,
       requestId: 'req-ledger-1',
       createdAt: new Date('2026-02-01T10:00:00.000Z'),
@@ -504,6 +521,7 @@ test('findUnindexedRevenueLedgerEvents resolves developer ownership from apis an
       apiId: 'api-chat',
       endpointId: 'endpoint-2',
       apiKeyId: 'key-2',
+      developerId: 'dev-1',
       amount: 250n,
       requestId: 'req-ledger-2',
       createdAt: new Date('2026-02-02T10:00:00.000Z'),
@@ -513,6 +531,7 @@ test('findUnindexedRevenueLedgerEvents resolves developer ownership from apis an
       apiId: 'api-missing',
       endpointId: 'endpoint-3',
       apiKeyId: 'key-3',
+      developerId: 'dev-1',
       amount: 999n,
       requestId: 'req-ledger-3',
       createdAt: new Date('2026-02-03T10:00:00.000Z'),
@@ -538,9 +557,14 @@ test('findUnindexedRevenueLedgerEvents resolves developer ownership from apis an
       {
         usageEventId: '2',
         apiId: 'api-chat',
-        developerId: 'dev-chat',
         amount: 250n,
         createdAt: new Date('2026-02-02T10:00:00.000Z'),
+      },
+      {
+        usageEventId: '3',
+        apiId: 'api-missing',
+        amount: 999n,
+        createdAt: new Date('2026-02-03T10:00:00.000Z'),
       },
     ]);
   } finally {
@@ -557,6 +581,7 @@ test('indexRevenueLedgerEvent inserts idempotently by usageEventId', async () =>
       apiId: 'api-weather',
       endpointId: 'endpoint-1',
       apiKeyId: 'key-1',
+      developerId: 'dev-1',
       amount: 1500n,
       requestId: 'req-ledger-insert',
       createdAt: new Date('2026-02-05T10:00:00.000Z'),
@@ -565,17 +590,15 @@ test('indexRevenueLedgerEvent inserts idempotently by usageEventId', async () =>
     const insertedFirst = await repository.indexRevenueLedgerEvent({
       usageEventId: '1',
       apiId: 'api-weather',
-      developerId: 'dev-weather',
       amount: 1500n,
       createdAt: new Date('2026-02-05T10:00:00.000Z'),
-    });
+    }, 'dev-weather');
     const insertedDuplicate = await repository.indexRevenueLedgerEvent({
       usageEventId: '1',
       apiId: 'api-weather',
-      developerId: 'dev-weather',
       amount: 1500n,
       createdAt: new Date('2026-02-05T10:00:00.000Z'),
-    });
+    }, 'dev-weather');
     const count = await pool.query(
       'SELECT COUNT(*)::text AS count FROM revenue_ledger WHERE usage_event_id = $1',
       ['1'],

@@ -3,6 +3,7 @@ import { ApiRegistry, UsageEvent, UsageStore } from '../types/gateway.js';
 import { SorobanSettlementClient } from './sorobanSettlement.js';
 import { randomUUID } from 'node:crypto';
 import { config } from '../config/index.js';
+import { calloraEvents } from '../events/event.emitter.js';
 import {
   RETRIABLE_HTTP_STATUSES,
   TransientError,
@@ -18,12 +19,36 @@ export interface RevenueSettlementOptions {
   horizonUrl?: string;
   fetchImpl?: typeof fetch;
   horizonRequestTimeoutMs?: number;
+  /** Maximum retry attempts for transient Horizon errors (default: 3). */
   horizonMaxRetries?: number;
+  /** Base delay in ms for Horizon retry backoff (default: 500). */
   horizonRetryBaseDelayMs?: number;
+}
+
+/**
+ * Horizon transaction response type.
+ * 
+ * Note: result_codes may be missing when Horizon returns a generic error (e.g., tx_failed without
+ * details). In such cases, we treat the transaction as failed with an unknown reason. The result_codes.transaction
+ * field indicates why the transaction was rejected by Stellar (e.g., 'tx_bad_seq', 'tx_too_large').
+ * 
+ * When result_codes is missing or transaction field is undefined, we assign status 'failed_unknown'
+ * and log at WARN level. This is expected behavior from Horizon and requires investigation in the DB.
+ */
+export interface ReconcileResult {
+  checked: number;
+  completed: number;
+  failed: number;
+  errors: number;
 }
 
 interface HorizonTransactionResponse {
   successful?: boolean;
+  status?: string;
+  result_codes?: {
+    transaction?: string;
+    operations?: string[];
+  };
 }
 
 export class RevenueSettlementService {
@@ -141,20 +166,29 @@ export class RevenueSettlementService {
         };
       }
 
-      // 3. Update settlement status and events
+      // 3. Record the submitted tx hash and mark events settled. The settlement
+      //    stays 'pending' until reconcilePendingSettlements() confirms the
+      //    transaction on Horizon and promotes it to 'completed'.
       if (result.success && result.txHash) {
         try {
-          await this.settlementStore.updateStatus(settlementId, 'completed', result.txHash);
+          await this.settlementStore.updateStatus(settlementId, 'pending', result.txHash);
           await this.usageStore.markAsSettled(eventIds, settlementId);
+
+          await this.emitSettlementCompleted(
+            settlementId,
+            developerId,
+            totalAmount,
+            result.txHash,
+          );
 
           processed += events.length;
           settledAmount += totalAmount;
         } catch (error) {
           errors++;
-        await this.recordFailedSettlement(
-          settlementId,
-          developerId,
-          `Finalization failed after payout: ${this.getErrorMessage(error)}`,
+          await this.recordFailedSettlement(
+            settlementId,
+            developerId,
+            `Finalization failed after payout: ${this.getErrorMessage(error)}`,
             true,
           );
         }
@@ -166,6 +200,178 @@ export class RevenueSettlementService {
     }
 
     return { processed, settledAmount, errors };
+  }
+
+  /**
+   * Reconcile all pending settlements by checking their transaction status on Horizon.
+   * - Marks confirmed transactions as 'completed'.
+   * - Marks 404/unsuccessful transactions as 'failed'.
+   * - Leaves pending entries unchanged when Horizon returns a transient error (retries with backoff).
+   * Returns a summary of the reconciliation pass.
+   */
+  async reconcilePendingSettlements(): Promise<ReconcileResult> {
+    const previousReconcile = this.reconcileTail.catch(() => undefined);
+    let releaseReconcile!: () => void;
+    this.reconcileTail = new Promise<void>((resolve) => {
+      releaseReconcile = resolve;
+    });
+
+    await previousReconcile;
+
+    try {
+      return await this.reconcilePendingSettlementsOnce();
+    } finally {
+      releaseReconcile();
+    }
+  }
+
+  private async reconcilePendingSettlementsOnce(): Promise<{ checked: number; completed: number; failed: number; errors: number }> {
+    const horizonUrl = this.options.horizonUrl;
+    if (!horizonUrl) {
+      // Horizon is not configured; skip reconciliation
+      return { checked: 0, completed: 0, failed: 0, errors: 0 };
+    }
+
+    const pendingSettlements = await this.settlementStore.getPendingSettlements();
+
+    let checked = 0;
+    let completed = 0;
+    let failed = 0;
+    let errors = 0;
+
+    for (const settlement of pendingSettlements) {
+      try {
+        checked++;
+
+        // Defensively fetch and parse Horizon response
+        const horizonResponse = await this.fetchHorizonTransactionStatus(settlement.tx_hash!);
+
+        // Defensive parsing: result_codes may be missing
+        const resultCodes = horizonResponse?.result_codes;
+        const transactionCode = resultCodes?.transaction;
+
+        if (horizonResponse?.successful === true) {
+          // Transaction confirmed successful
+          try {
+            await this.settlementStore.updateStatus(settlement.id, 'completed');
+            completed++;
+          } catch (updateError) {
+            errors++;
+            console.warn(
+              { settlementId: settlement.id, error: updateError },
+              'Failed to update settlement to completed — skipping',
+            );
+          }
+        } else if (horizonResponse?.successful === false) {
+          // Transaction explicitly failed
+          try {
+            await this.settlementStore.updateStatus(settlement.id, 'failed');
+            failed++;
+          } catch (updateError) {
+            errors++;
+            console.warn(
+              { settlementId: settlement.id, error: updateError },
+              'Failed to update settlement to failed — skipping',
+            );
+          }
+
+          // Log the failure reason if available
+          if (!transactionCode) {
+            console.warn(
+              { settlementId: settlement.id },
+              'Horizon returned tx_failed but missing result_codes',
+            );
+          }
+        } else if (horizonResponse === null) {
+          // Transaction not found in Horizon — treat as failed
+          try {
+            await this.settlementStore.updateStatus(settlement.id, 'failed');
+            failed++;
+          } catch (updateError) {
+            errors++;
+            console.warn(
+              { settlementId: settlement.id, error: updateError },
+              'Failed to update settlement to failed (not found) — skipping',
+            );
+          }
+
+          console.warn(
+            { settlementId: settlement.id },
+            'Horizon did not find transaction',
+          );
+        } else {
+          // Unexpected response shape; leave as pending and log warning
+          errors++;
+          console.warn(
+            { settlementId: settlement.id },
+            'Unexpected Horizon response shape — leaving settlement pending',
+          );
+        }
+      } catch (error) {
+        // Catch any exception during per-settlement processing to continue batch
+        errors++;
+        console.warn(
+          { settlementId: settlement.id, error },
+          'Failed to sync settlement status — skipping',
+        );
+      }
+    }
+
+    return { checked, completed, failed, errors };
+  }
+
+  /**
+   * Fetches transaction status from Horizon, retrying transient errors with backoff.
+   * Returns null if transaction is not found (404).
+   * Throws only on permanent errors (not retriable).
+   */
+  private async fetchHorizonTransactionStatus(txHash: string): Promise<HorizonTransactionResponse | null> {
+    const horizonUrl = this.options.horizonUrl;
+    if (!horizonUrl) {
+      throw new Error('Horizon URL not configured');
+    }
+
+    const fetchImpl = this.options.fetchImpl ?? fetch;
+    const maxRetries = this.options.horizonMaxRetries ?? 2;
+    const baseDelayMs = this.options.horizonRetryBaseDelayMs ?? 100;
+    const timeoutMs = this.options.horizonRequestTimeoutMs ?? 5000;
+
+    return withRetry(
+      async () => {
+        const url = `${horizonUrl.endsWith('/') ? horizonUrl : horizonUrl + '/'}transactions/${txHash}`;
+
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+        try {
+          const response = await fetchImpl(url, { signal: controller.signal });
+
+          if (response.status === 404) {
+            // Not found is not retriable; transaction doesn't exist
+            return null;
+          }
+
+          if (!response.ok) {
+            // For non-404 errors, check if retriable (5xx or specific 4xx)
+            if (RETRIABLE_HTTP_STATUSES.has(response.status)) {
+              throw new TransientError(`Horizon returned ${response.status}`);
+            }
+            // Non-retriable error
+            throw new Error(`Horizon returned ${response.status}`);
+          }
+
+          const data = await response.json() as HorizonTransactionResponse;
+          return data;
+        } finally {
+          clearTimeout(timeoutId);
+        }
+      },
+      {
+        maxAttempts: maxRetries + 1,
+        baseDelayMs,
+        shouldRetry: isTransientNetworkError,
+      },
+    );
   }
 
   private async recordFailedSettlement(
@@ -205,3 +411,4 @@ export class RevenueSettlementService {
     return 'Unknown settlement failure';
   }
 }
+

@@ -7,6 +7,7 @@ export interface ApiKey {
   developerId: string;
   apiId: string;
   revoked?: boolean;
+  tier?: string;
 }
 
 /** A single recorded usage event from a proxied request. */
@@ -70,7 +71,7 @@ export interface BillingService {
 
 /** Interface for rate limiting. */
 export interface RateLimiter {
-  check(apiKey: string): Promise<RateLimitResult>;
+  check(apiKey: string, tier?: string): Promise<RateLimitResult>;
 }
 
 /** Interface for recording and querying usage events. */
@@ -119,7 +120,19 @@ export interface GatewayDeps {
   authMiddleware?: RequestHandler;
   /** Maximum allowed request body size (Express size string, e.g. '1mb', '512kb'). Default: '1mb'. */
   maxBodySize?: string;
+  /**
+   * API registry for resolving slugs/IDs to upstream entries.
+   * Used by the health endpoint to validate apiSlug existence.
+   */
+  registry?: ApiRegistry;
+  /**
+   * Circuit breaker registry for retrieving per-slug breaker state.
+   * Defaults to the shared singleton if omitted.
+   */
+  breakerRegistry?: import('../lib/circuitBreaker.js').BreakerRegistry;
 }
+
+import type { CircuitBreakerStore } from '../lib/circuitBreaker.js';
 
 /** Dependencies injected into the proxy router factory. */
 export interface ProxyDeps {
@@ -130,4 +143,5 @@ export interface ProxyDeps {
   apiKeys?: Map<string, ApiKey>;
   authMiddleware?: RequestHandler;
   proxyConfig?: Partial<ProxyConfig>;
+  circuitBreakerStore?: CircuitBreakerStore;
 }

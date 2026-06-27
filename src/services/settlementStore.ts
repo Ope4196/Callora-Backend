@@ -33,6 +33,17 @@ export class InMemorySettlementStore implements SettlementStore {
       .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
   }
 
+  listPending(): Settlement[] {
+    return this.getPendingSettlements();
+  }
+
+  setCompletedAt(id: string, completedAt: string): void {
+    const s = this.settlements.find((s) => s.id === id);
+    if (s) {
+      s.completed_at = completedAt;
+    }
+  }
+
   /** Helper for tests */
   clear(): void {
     this.settlements = [];
@@ -134,6 +145,25 @@ export class PostgresSettlementStore implements SettlementStore {
         ORDER BY created_at DESC, id DESC
       `,
       [developerId],
+    );
+
+    return result.rows.map(mapSettlementRow);
+  }
+
+  async getPendingSettlements(): Promise<Settlement[]> {
+    const result = await this.db.query<SettlementStoreRow>(
+      `
+        SELECT
+          external_id,
+          developer_id,
+          amount_usdc,
+          status,
+          stellar_tx_hash,
+          created_at
+        FROM settlements
+        WHERE status = 'pending'
+        ORDER BY created_at ASC, id ASC
+      `,
     );
 
     return result.rows.map(mapSettlementRow);

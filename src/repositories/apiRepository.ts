@@ -1,7 +1,14 @@
-import { eq, and, like, type SQL, count } from 'drizzle-orm';
-import { db, schema } from '../db/index.js';
-import type { Api, ApiEndpoint, NewApi, NewApiEndpoint, ApiStatus, HttpMethod } from '../db/schema.js';
-import { listingsCache } from '../lib/listingsCache.js';
+import { eq, and, like, type SQL, count } from "drizzle-orm";
+import { db, schema } from "../db/index.js";
+import type {
+  Api,
+  ApiEndpoint,
+  NewApi,
+  NewApiEndpoint,
+  ApiStatus,
+  HttpMethod,
+} from "../db/schema.js";
+import { listingsCache } from "../lib/listingsCache.js";
 
 export interface ApiListFilters {
   status?: ApiStatus;
@@ -63,14 +70,31 @@ export interface PaginatedApiListResult {
   total: number;
 }
 
+export interface BulkCreateEndpointResult {
+  id: number;
+  api_id: number;
+  path: string;
+  method: string;
+  price_per_call_usdc: string;
+  description: string | null;
+}
+
 export interface ApiRepository {
   create(api: ApiCreateInput): Promise<Api>;
   createWithEndpoints(input: CreateApiInput): Promise<ApiWithEndpoints>;
   update(id: number, data: ApiUpdateInput): Promise<Api | null>;
-  listByDeveloper(developerId: number, filters?: ApiListFilters): Promise<Api[]>;
+  delete(id: number): Promise<boolean>;
+  listByDeveloper(
+    developerId: number,
+    filters?: ApiListFilters,
+  ): Promise<Api[]>;
   listPublic(filters?: ApiListFilters): Promise<Api[]>;
   findById(id: number): Promise<ApiDetails | null>;
   getEndpoints(apiId: number): Promise<ApiEndpointInfo[]>;
+  bulkCreateEndpoints(
+    apiId: number,
+    endpoints: CreateEndpointInput[],
+  ): Promise<BulkCreateEndpointResult[]>;
 }
 
 export const defaultApiRepository: ApiRepository = {
@@ -84,11 +108,11 @@ export const defaultApiRepository: ApiRepository = {
         base_url: api.base_url,
         logo_url: api.logo_url ?? null,
         category: api.category ?? null,
-        status: api.status ?? 'draft',
+        status: api.status ?? "draft",
       } as NewApi)
       .returning();
 
-    if (!created) throw new Error('API insert failed');
+    if (!created) throw new Error("API insert failed");
 
     // A new API may appear in any listing filter combination — flush the cache.
     listingsCache.invalidateAll();
@@ -105,15 +129,22 @@ export const defaultApiRepository: ApiRepository = {
 
   async update(id, data) {
     const payload: Partial<NewApi> = {};
-    if (typeof data.name === 'string') payload.name = data.name;
-    if (typeof data.description === 'string' || data.description === null) payload.description = data.description;
-    if (typeof data.base_url === 'string') payload.base_url = data.base_url;
-    if (typeof data.logo_url === 'string' || data.logo_url === null) payload.logo_url = data.logo_url;
-    if (typeof data.category === 'string' || data.category === null) payload.category = data.category;
+    if (typeof data.name === "string") payload.name = data.name;
+    if (typeof data.description === "string" || data.description === null)
+      payload.description = data.description;
+    if (typeof data.base_url === "string") payload.base_url = data.base_url;
+    if (typeof data.logo_url === "string" || data.logo_url === null)
+      payload.logo_url = data.logo_url;
+    if (typeof data.category === "string" || data.category === null)
+      payload.category = data.category;
     if (data.status) payload.status = data.status;
 
     if (Object.keys(payload).length === 0) {
-      const existing = await db.select().from(schema.apis).where(eq(schema.apis.id, id)).limit(1);
+      const existing = await db
+        .select()
+        .from(schema.apis)
+        .where(eq(schema.apis.id, id))
+        .limit(1);
       return existing[0] ?? null;
     }
 
@@ -131,6 +162,16 @@ export const defaultApiRepository: ApiRepository = {
     return updated ?? null;
   },
 
+  async delete(id) {
+    const result = await db.delete(schema.apis).where(eq(schema.apis.id, id));
+
+    // Deletion may affect any listing (e.g., removed from public catalog).
+    listingsCache.invalidateAll();
+
+    // better-sqlite3's RunResult exposes the affected row count on `changes`
+    return deleted.changes > 0;
+  },
+
   async listByDeveloper(developerId, filters = {}) {
     const conditions: SQL[] = [eq(schema.apis.developer_id, developerId)];
     if (filters.status) {
@@ -143,13 +184,16 @@ export const defaultApiRepository: ApiRepository = {
       conditions.push(like(schema.apis.name, `%${filters.search}%`));
     }
 
-    let query = db.select().from(schema.apis).where(and(...conditions));
+    let query = db
+      .select()
+      .from(schema.apis)
+      .where(and(...conditions));
 
-    if (typeof filters.limit === 'number') {
+    if (typeof filters.limit === "number") {
       query = query.limit(filters.limit) as typeof query;
     }
 
-    if (typeof filters.offset === 'number') {
+    if (typeof filters.offset === "number") {
       query = query.offset(filters.offset) as typeof query;
     }
 
@@ -157,7 +201,7 @@ export const defaultApiRepository: ApiRepository = {
   },
 
   async listPublic(filters = {}) {
-    const conditions: SQL[] = [eq(schema.apis.status, 'active')];
+    const conditions: SQL[] = [eq(schema.apis.status, "active")];
     if (filters.category) {
       conditions.push(eq(schema.apis.category, filters.category));
     }
@@ -165,16 +209,19 @@ export const defaultApiRepository: ApiRepository = {
       conditions.push(like(schema.apis.name, `%${filters.search}%`));
     }
 
-    if (filters.status && filters.status !== 'active') {
+    if (filters.status && filters.status !== "active") {
       return [];
     }
 
-    let query = db.select().from(schema.apis).where(and(...conditions));
+    let query = db
+      .select()
+      .from(schema.apis)
+      .where(and(...conditions));
 
-    if (typeof filters.limit === 'number') {
+    if (typeof filters.limit === "number") {
       query = query.limit(filters.limit) as typeof query;
     }
-    if (typeof filters.offset === 'number') {
+    if (typeof filters.offset === "number") {
       query = query.offset(filters.offset) as typeof query;
     }
 
@@ -196,8 +243,11 @@ export const defaultApiRepository: ApiRepository = {
         developer_description: schema.developers.description,
       })
       .from(schema.apis)
-      .leftJoin(schema.developers, eq(schema.apis.developer_id, schema.developers.id))
-      .where(and(eq(schema.apis.id, id), eq(schema.apis.status, 'active')))
+      .leftJoin(
+        schema.developers,
+        eq(schema.apis.developer_id, schema.developers.id),
+      )
+      .where(and(eq(schema.apis.id, id), eq(schema.apis.status, "active")))
       .limit(1);
 
     const row = rows[0];
@@ -237,6 +287,36 @@ export const defaultApiRepository: ApiRepository = {
       description: r.description,
     }));
   },
+
+  async bulkCreateEndpoints(apiId, endpoints) {
+    return db.transaction(async (tx) => {
+      const rows = await tx
+        .insert(schema.apiEndpoints)
+        .values(
+          endpoints.map(
+            (e) =>
+              ({
+                api_id: apiId,
+                path: e.path,
+                method: e.method,
+                price_per_call_usdc: e.price_per_call_usdc,
+                description: e.description ?? null,
+              }) as NewApiEndpoint,
+          ),
+        )
+        .returning();
+
+      listingsCache.invalidateAll();
+      return rows.map((r) => ({
+        id: r.id,
+        api_id: r.api_id,
+        path: r.path,
+        method: r.method,
+        price_per_call_usdc: r.price_per_call_usdc,
+        description: r.description,
+      }));
+    });
+  },
 };
 
 // --- In-Memory implementation (for testing) ---
@@ -249,12 +329,12 @@ export class InMemoryApiRepository implements ApiRepository {
 
   constructor(
     apis: Array<ApiDetails | Api> = [],
-    endpointsByApiId: Map<number, ApiEndpointInfo[]> = new Map()
+    endpointsByApiId: Map<number, ApiEndpointInfo[]> = new Map(),
   ) {
     this.apis = apis.map((api) => this.toApi(api));
     this.detailsById = new Map(
       apis.map((api) => {
-        if ('developer' in api) return [api.id, api];
+        if ("developer" in api) return [api.id, api];
         return [
           api.id,
           {
@@ -268,14 +348,14 @@ export class InMemoryApiRepository implements ApiRepository {
             developer: { name: null, website: null, description: null },
           } as ApiDetails,
         ];
-      })
+      }),
     );
     this.endpointsByApiId = new Map(endpointsByApiId);
     this.nextId = Math.max(0, ...this.apis.map((a) => a.id)) + 1;
   }
 
   private toApi(api: ApiDetails | Api): Api {
-    if (!('developer' in api)) return api;
+    if (!("developer" in api)) return api;
     return {
       id: api.id,
       developer_id: 0,
@@ -300,7 +380,7 @@ export class InMemoryApiRepository implements ApiRepository {
       base_url: api.base_url,
       logo_url: api.logo_url ?? null,
       category: api.category ?? null,
-      status: api.status ?? 'draft',
+      status: api.status ?? "draft",
       created_at: now,
       updated_at: now,
     };
@@ -321,23 +401,28 @@ export class InMemoryApiRepository implements ApiRepository {
   async createWithEndpoints(input: CreateApiInput): Promise<ApiWithEndpoints> {
     const api = await this.create(input);
     const now = new Date();
-    const endpointRows: ApiEndpoint[] = input.endpoints.map((endpoint, index) => ({
-      id: index + 1,
-      api_id: api.id,
-      path: endpoint.path,
-      method: endpoint.method,
-      price_per_call_usdc: endpoint.price_per_call_usdc,
-      description: endpoint.description ?? null,
-      created_at: now,
-      updated_at: now,
-    }));
+    const endpointRows: ApiEndpoint[] = input.endpoints.map(
+      (endpoint, index) => ({
+        id: index + 1,
+        api_id: api.id,
+        path: endpoint.path,
+        method: endpoint.method,
+        price_per_call_usdc: endpoint.price_per_call_usdc,
+        description: endpoint.description ?? null,
+        created_at: now,
+        updated_at: now,
+      }),
+    );
 
-    this.endpointsByApiId.set(api.id, endpointRows.map((endpoint) => ({
-      path: endpoint.path,
-      method: endpoint.method,
-      price_per_call_usdc: endpoint.price_per_call_usdc,
-      description: endpoint.description,
-    })));
+    this.endpointsByApiId.set(
+      api.id,
+      endpointRows.map((endpoint) => ({
+        path: endpoint.path,
+        method: endpoint.method,
+        price_per_call_usdc: endpoint.price_per_call_usdc,
+        description: endpoint.description,
+      })),
+    );
 
     return {
       ...api,
@@ -351,13 +436,17 @@ export class InMemoryApiRepository implements ApiRepository {
     const current = this.apis[index];
     const updated: Api = {
       ...current,
-      ...(typeof data.name === 'string' ? { name: data.name } : {}),
-      ...(typeof data.description === 'string' || data.description === null
+      ...(typeof data.name === "string" ? { name: data.name } : {}),
+      ...(typeof data.description === "string" || data.description === null
         ? { description: data.description }
         : {}),
-      ...(typeof data.base_url === 'string' ? { base_url: data.base_url } : {}),
-      ...(typeof data.logo_url === 'string' || data.logo_url === null ? { logo_url: data.logo_url } : {}),
-      ...(typeof data.category === 'string' || data.category === null ? { category: data.category } : {}),
+      ...(typeof data.base_url === "string" ? { base_url: data.base_url } : {}),
+      ...(typeof data.logo_url === "string" || data.logo_url === null
+        ? { logo_url: data.logo_url }
+        : {}),
+      ...(typeof data.category === "string" || data.category === null
+        ? { category: data.category }
+        : {}),
       ...(data.status ? { status: data.status } : {}),
       updated_at: new Date(),
     };
@@ -378,7 +467,24 @@ export class InMemoryApiRepository implements ApiRepository {
     return updated;
   }
 
-  async listByDeveloper(developerId: number, filters: ApiListFilters = {}): Promise<Api[]> {
+  async delete(id: number): Promise<boolean> {
+    const index = this.apis.findIndex((a) => a.id === id);
+    if (index === -1) return false;
+
+    // Remove the API
+    this.apis.splice(index, 1);
+
+    // Remove associated details and endpoints (cascade behavior)
+    this.detailsById.delete(id);
+    this.endpointsByApiId.delete(id);
+
+    return true;
+  }
+
+  async listByDeveloper(
+    developerId: number,
+    filters: ApiListFilters = {},
+  ): Promise<Api[]> {
     let results = this.apis.filter((api) => api.developer_id === developerId);
     if (filters.status) {
       results = results.filter((api) => api.status === filters.status);
@@ -388,56 +494,64 @@ export class InMemoryApiRepository implements ApiRepository {
     }
     if (filters.search) {
       const needle = filters.search.toLowerCase();
-      results = results.filter((api) => api.name.toLowerCase().includes(needle));
+      results = results.filter((api) =>
+        api.name.toLowerCase().includes(needle),
+      );
     }
-    if (typeof filters.offset === 'number') {
+    if (typeof filters.offset === "number") {
       results = results.slice(filters.offset);
     }
-    if (typeof filters.limit === 'number') {
+    if (typeof filters.limit === "number") {
       results = results.slice(0, filters.limit);
     }
     return results;
   }
 
   async listPublic(filters: ApiListFilters = {}): Promise<Api[]> {
-    if (filters.status && filters.status !== 'active') return [];
-    let results = this.apis.filter((api) => api.status === 'active');
+    if (filters.status && filters.status !== "active") return [];
+    let results = this.apis.filter((api) => api.status === "active");
     if (filters.category) {
       results = results.filter((api) => api.category === filters.category);
     }
     if (filters.search) {
       const needle = filters.search.toLowerCase();
-      results = results.filter((api) => api.name.toLowerCase().includes(needle));
+      results = results.filter((api) =>
+        api.name.toLowerCase().includes(needle),
+      );
     }
-    if (typeof filters.offset === 'number') {
+    if (typeof filters.offset === "number") {
       results = results.slice(filters.offset);
     }
-    if (typeof filters.limit === 'number') {
+    if (typeof filters.limit === "number") {
       results = results.slice(0, filters.limit);
     }
     return results;
   }
 
-  async listPublicDetailed(filters: ApiListFilters = {}): Promise<PaginatedApiListResult> {
+  async listPublicDetailed(
+    filters: ApiListFilters = {},
+  ): Promise<PaginatedApiListResult> {
     let results = this.apis;
     if (filters.status) {
       results = results.filter((api) => api.status === filters.status);
     } else {
-      results = results.filter((api) => api.status === 'active');
+      results = results.filter((api) => api.status === "active");
     }
     if (filters.category) {
       results = results.filter((api) => api.category === filters.category);
     }
     if (filters.search) {
       const needle = filters.search.toLowerCase();
-      results = results.filter((api) => api.name.toLowerCase().includes(needle));
+      results = results.filter((api) =>
+        api.name.toLowerCase().includes(needle),
+      );
     }
 
     const total = results.length;
-    if (typeof filters.offset === 'number') {
+    if (typeof filters.offset === "number") {
       results = results.slice(filters.offset);
     }
-    if (typeof filters.limit === 'number') {
+    if (typeof filters.limit === "number") {
       results = results.slice(0, filters.limit);
     }
 
@@ -451,7 +565,11 @@ export class InMemoryApiRepository implements ApiRepository {
         logo_url: api.logo_url,
         category: api.category,
         status: api.status,
-        developer: details?.developer ?? { name: null, website: null, description: null },
+        developer: details?.developer ?? {
+          name: null,
+          website: null,
+          description: null,
+        },
         endpoints: this.endpointsByApiId.get(api.id) ?? [],
       };
     });
@@ -468,6 +586,45 @@ export class InMemoryApiRepository implements ApiRepository {
   async getEndpoints(apiId: number): Promise<ApiEndpointInfo[]> {
     return this.endpointsByApiId.get(apiId) ?? [];
   }
+
+  async bulkCreateEndpoints(
+    apiId: number,
+    endpoints: CreateEndpointInput[],
+  ): Promise<BulkCreateEndpointResult[]> {
+    const existing = this.endpointsByApiId.get(apiId) ?? [];
+    const now = new Date();
+    const nextIds = existing.length + 1;
+
+    const created = endpoints.map((e, i) => ({
+      id: nextIds + i,
+      api_id: apiId,
+      path: e.path,
+      method: e.method,
+      price_per_call_usdc: e.price_per_call_usdc,
+      description: e.description ?? null,
+      created_at: now,
+      updated_at: now,
+    }));
+
+    this.endpointsByApiId.set(apiId, [
+      ...existing,
+      ...created.map((c) => ({
+        path: c.path,
+        method: c.method,
+        price_per_call_usdc: c.price_per_call_usdc,
+        description: c.description,
+      })),
+    ]);
+
+    return created.map((c) => ({
+      id: c.id,
+      api_id: c.api_id,
+      path: c.path,
+      method: c.method,
+      price_per_call_usdc: c.price_per_call_usdc,
+      description: c.description,
+    }));
+  }
 }
 
 export async function listPublicDetailed(
@@ -475,10 +632,12 @@ export async function listPublicDetailed(
   filters: ApiListFilters = {},
 ): Promise<PaginatedApiListResult> {
   const detailedRepository = repository as ApiRepository & {
-    listPublicDetailed?: (filters?: ApiListFilters) => Promise<PaginatedApiListResult>;
+    listPublicDetailed?: (
+      filters?: ApiListFilters,
+    ) => Promise<PaginatedApiListResult>;
   };
 
-  if (typeof detailedRepository.listPublicDetailed === 'function') {
+  if (typeof detailedRepository.listPublicDetailed === "function") {
     return detailedRepository.listPublicDetailed(filters);
   }
 
@@ -487,7 +646,7 @@ export async function listPublicDetailed(
     if (filters.status) {
       conditions.push(eq(schema.apis.status, filters.status));
     } else {
-      conditions.push(eq(schema.apis.status, 'active'));
+      conditions.push(eq(schema.apis.status, "active"));
     }
     if (filters.category) {
       conditions.push(eq(schema.apis.category, filters.category));
@@ -516,13 +675,16 @@ export async function listPublicDetailed(
         developer_description: schema.developers.description,
       })
       .from(schema.apis)
-      .leftJoin(schema.developers, eq(schema.apis.developer_id, schema.developers.id))
+      .leftJoin(
+        schema.developers,
+        eq(schema.apis.developer_id, schema.developers.id),
+      )
       .where(whereClause);
 
-    if (typeof filters.limit === 'number') {
+    if (typeof filters.limit === "number") {
       query = query.limit(filters.limit) as typeof query;
     }
-    if (typeof filters.offset === 'number') {
+    if (typeof filters.offset === "number") {
       query = query.offset(filters.offset) as typeof query;
     }
 
@@ -560,7 +722,11 @@ export async function listPublicDetailed(
         logo_url: api.logo_url,
         category: api.category,
         status: api.status,
-        developer: details?.developer ?? { name: null, website: null, description: null },
+        developer: details?.developer ?? {
+          name: null,
+          website: null,
+          description: null,
+        },
         endpoints: await repository.getEndpoints(api.id),
       };
     }),
@@ -592,7 +758,9 @@ export interface ApiWithEndpoints extends Api {
   endpoints: ApiEndpoint[];
 }
 
-export async function createApi(input: CreateApiInput): Promise<ApiWithEndpoints> {
+export async function createApi(
+  input: CreateApiInput,
+): Promise<ApiWithEndpoints> {
   const { endpoints, ...apiData } = input;
   return db.transaction(async (tx) => {
     const [api] = await tx
@@ -603,11 +771,11 @@ export async function createApi(input: CreateApiInput): Promise<ApiWithEndpoints
         description: apiData.description ?? null,
         base_url: apiData.base_url,
         category: apiData.category ?? null,
-        status: apiData.status ?? 'draft',
+        status: apiData.status ?? "draft",
       } as NewApi)
       .returning();
 
-    if (!api) throw new Error('API insert failed');
+    if (!api) throw new Error("API insert failed");
 
     let endpointRows: ApiEndpoint[] = [];
     if (endpoints.length > 0) {

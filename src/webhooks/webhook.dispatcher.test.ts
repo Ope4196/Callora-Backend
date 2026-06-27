@@ -1,4 +1,4 @@
-import { dispatchWebhook, resetWebhookDispatcherForTests, stopWebhookDispatching } from './webhook.dispatcher.js';
+import { dispatchWebhook, dispatchToAll, resetWebhookDispatcherForTests, stopWebhookDispatching } from './webhook.dispatcher.js';
 import type { WebhookConfig, WebhookPayload } from './webhook.types.js';
 
 describe('Webhook Dispatcher', () => {
@@ -127,5 +127,49 @@ describe('Webhook Dispatcher', () => {
         await dispatchWebhook(config, payload);
 
         expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('fans out settlement_completed payloads to every registered endpoint', async () => {
+        const fetchMock = jest.fn().mockResolvedValue({
+            ok: true,
+            status: 200,
+            statusText: 'OK',
+        } as Response);
+        global.fetch = fetchMock as any;
+
+        const settlementPayload: WebhookPayload = {
+            event: 'settlement_completed',
+            timestamp: new Date().toISOString(),
+            developerId: 'dev_123',
+            data: {
+                settlementId: 'stl_001',
+                amount: '25.5000000',
+                asset: 'USDC',
+                txHash: 'abc123',
+                settledAt: new Date().toISOString(),
+            },
+        };
+
+        const primary: WebhookConfig = {
+            ...config,
+            url: 'https://example.com/webhook-primary',
+            events: ['settlement_completed'],
+        };
+        const secondary: WebhookConfig = {
+            ...config,
+            url: 'https://example.com/webhook-secondary',
+            events: ['settlement_completed'],
+        };
+
+        const promise = dispatchToAll([primary, secondary], settlementPayload);
+        await Promise.resolve();
+        await promise;
+
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+        expect(fetchMock.mock.calls[0][0]).toBe(primary.url);
+        expect(fetchMock.mock.calls[1][0]).toBe(secondary.url);
+
+        const headers = fetchMock.mock.calls[0][1].headers as Record<string, string>;
+        expect(headers['X-Callora-Event']).toBe('settlement_completed');
     });
 });
