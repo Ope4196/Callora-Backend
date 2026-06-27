@@ -275,11 +275,14 @@
         }
       }
     },
-    "/api/usage/csv": {
+    "/api/admin/usage/anomalies": {
       "get": {
-        "summary": "Stream usage events as CSV",
-        "description": "Streams the authenticated user's usage events as a CSV file (chunked transfer encoding) filtered by date range and API. Memory usage is bounded regardless of export size. Defaults to the last 30 days when no range is supplied.",
+        "summary": "List detected usage anomalies",
+        "description": "Returns per-API daily usage anomalies for admin review. Usage events are aggregated to per-API daily call counts over the requested window, then each API's days are scored against that API's own baseline using a z-score test; days whose absolute z-score meets the threshold are flagged as spikes or drops. Requires admin authentication and the admin IP allowlist.",
         "security": [
+          {
+            "adminApiKey": []
+          },
           {
             "bearerAuth": []
           }
@@ -288,7 +291,7 @@
           {
             "name": "from",
             "in": "query",
-            "description": "Start of period (ISO-8601 string). Defaults to 30 days ago.",
+            "description": "Start of analysis window (ISO-8601). Defaults to 30 days ago.",
             "required": false,
             "schema": {
               "type": "string",
@@ -298,7 +301,7 @@
           {
             "name": "to",
             "in": "query",
-            "description": "End of period (ISO-8601 string). Defaults to now.",
+            "description": "End of analysis window (ISO-8601). Defaults to now.",
             "required": false,
             "schema": {
               "type": "string",
@@ -306,9 +309,33 @@
             }
           },
           {
+            "name": "threshold",
+            "in": "query",
+            "description": "Absolute z-score at/above which a day is flagged.",
+            "required": false,
+            "schema": {
+              "type": "number",
+              "minimum": 1,
+              "maximum": 10,
+              "default": 3
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Maximum number of anomalies to return (most severe first).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000,
+              "default": 100
+            }
+          },
+          {
             "name": "apiId",
             "in": "query",
-            "description": "Filter by specific API ID",
+            "description": "Restrict analysis to a single API ID.",
             "required": false,
             "schema": {
               "type": "string"
@@ -317,21 +344,51 @@
         ],
         "responses": {
           "200": {
-            "description": "CSV export streamed successfully. Columns: id,apiId,endpoint,occurredAt,revenue",
-            "headers": {
-              "Content-Disposition": {
-                "description": "attachment; filename=\"usage-export-<date>.csv\"",
-                "schema": {
-                  "type": "string"
-                }
-              }
-            },
+            "description": "Detected anomalies retrieved successfully",
             "content": {
-              "text/csv": {
+              "application/json": {
                 "schema": {
-                  "type": "string"
-                },
-                "example": "id,apiId,endpoint,occurredAt,revenue\nevt-1,api-1,/v1/resource,2026-03-01T10:00:00.000Z,1500\n"
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "anomalies": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "apiId": { "type": "string" },
+                              "day": { "type": "string", "example": "2026-03-21" },
+                              "type": { "type": "string", "enum": ["spike", "drop"] },
+                              "calls": { "type": "integer" },
+                              "revenue": { "type": "string" },
+                              "baselineMean": { "type": "number" },
+                              "stdDev": { "type": "number" },
+                              "zScore": { "type": "number" }
+                            }
+                          }
+                        },
+                        "summary": {
+                          "type": "object",
+                          "properties": {
+                            "window": {
+                              "type": "object",
+                              "properties": {
+                                "from": { "type": "string", "format": "date-time" },
+                                "to": { "type": "string", "format": "date-time" }
+                              }
+                            },
+                            "threshold": { "type": "number" },
+                            "minDataPoints": { "type": "integer" },
+                            "seriesAnalyzed": { "type": "integer" },
+                            "anomalyCount": { "type": "integer" }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
               }
             }
           },
@@ -346,7 +403,17 @@
             }
           },
           "401": {
-            "description": "Unauthorized",
+            "description": "Unauthorized admin request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden by admin IP allowlist",
             "content": {
               "application/json": {
                 "schema": {
